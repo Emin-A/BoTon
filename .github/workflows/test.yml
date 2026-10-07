@@ -4,15 +4,14 @@ on:
   workflow_dispatch:
 
   schedule:
-    # 08:00–13:00 по Москве
-    # GitHub Actions работает в UTC:
-    # 05:00–10:00 UTC каждые 30 минут
+    # 08:00, 08:30, 09:00 ... 09:30, 10:00 ... 13:00
+    # Москва = UTC+3
     - cron: "0,30 5-9 * * *"
     - cron: "0 10 * * *"
 
-  push:
-    branches:
-      - main
+concurrency:
+  group: boton-dispatch
+  cancel-in-progress: false
 
 jobs:
   bot:
@@ -33,11 +32,9 @@ jobs:
       - name: Запустить BOTON
         env:
           GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
-
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SMTP_FROM_EMAIL: ${{ secrets.SMTP_FROM_EMAIL }}
-
         run: python main.py
