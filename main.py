@@ -29,6 +29,7 @@ TASKS_SHEET_NAME = "Лист1"
 
 DOCTORS_DB_ID = "1grwcVilkiwOI01UgWu4jrhOLV2GVM7TJ6TqlXE7enAU"
 DOCTORS_SHEET_NAME = "Врачи"
+COL_DOCTOR_EMAIL = 2
 
 # Резервная почта из исходного бота
 DEFAULT_EMAIL = "eagaverdiev@mosmedzdrav.ru"
