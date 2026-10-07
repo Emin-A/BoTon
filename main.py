@@ -3,6 +3,7 @@ import json
 import re
 import html
 import smtplib
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from email.message import EmailMessage
@@ -12,58 +13,56 @@ from google.oauth2.service_account import Credentials
 
 
 # ============================================================
-# BOTON — версия 1.0 TEST
-# Реальный тест отправки только на собственную почту
-# Врачи НЕ получают письма
-# Колонка M НЕ изменяется
+# BOTON — версия 1.1
 # ============================================================
 
-VERSION = "1.0 TEST"
+VERSION = "1.1"
 
-# ------------------------------------------------------------
-# НАСТРОЙКИ GOOGLE SHEETS
-# ------------------------------------------------------------
-
-TASKS_SPREADSHEET_ID = "13maufkGFPUdNE-d_i_nvC4l5xf3ParmuFCNYJ32wmVk"
-TASKS_SHEET_NAME = "Лист1"
-
-DOCTORS_DB_ID = "1grwcVilkiwOI01UgWu4jrhOLV2GVM7TJ6TqlXE7enAU"
-DOCTORS_SHEET_NAME = "Врачи"
-COL_DOCTOR_EMAIL = 2
-
-# Резервная почта из исходного бота
-DEFAULT_EMAIL = "eagaverdiev@mosmedzdrav.ru"
-
-# ------------------------------------------------------------
-# БЕЗОПАСНЫЙ РЕЖИМ
-# ------------------------------------------------------------
-
-# True = письмо отправляется только SMTP_USER
-# Врачи не получают писем
-# Таблица не изменяется
+# True  = тест: письмо только себе, таблица не изменяется
+# False = реальная рассылка врачам + запись результата в M
 TEST_MODE = True
 
-# Москва — чтобы дата совпадала с логикой Google Apps Script
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
-# ------------------------------------------------------------
-# СТОЛБЦЫ ТАБЛИЦЫ
-# ------------------------------------------------------------
 
-COL_DATE = 0          # A
-COL_BRANCH = 1        # B
-COL_DOCTOR = 2        # C
-COL_PATIENT_ID = 3    # D
-COL_PATIENT_NAME = 4  # E
-COL_SOURCE = 5        # F
-COL_TASK1 = 6         # G
-COL_TASK2 = 8         # I
-COL_TASK3 = 10        # K
-COL_COMPLETION = 12   # M
+# ============================================================
+# GOOGLE SHEETS
+# ============================================================
 
-# ------------------------------------------------------------
-# КЛЮЧЕВЫЕ СЛОВА ФИЛИАЛА 2
-# ------------------------------------------------------------
+TASKS_SPREADSHEET_ID = (
+    "13maufkGFPUdNE-d_i_nvC4l5xf3ParmuFCNYJ32wmVk"
+)
+TASKS_SHEET_NAME = "Лист1"
+
+DOCTORS_DB_ID = (
+    "1grwcVilkiwOI01UgWu4jrhOLV2GVM7TJ6TqlXE7enAU"
+)
+DOCTORS_SHEET_NAME = "Врачи"
+
+COL_DOCTOR_EMAIL = 2
+
+DEFAULT_EMAIL = "eagaverdiev@mosmedzdrav.ru"
+
+
+# ============================================================
+# СТОЛБЦЫ ТАБЛИЦЫ ЗАДАНИЙ
+# ============================================================
+
+COL_DATE = 0
+COL_BRANCH = 1
+COL_DOCTOR = 2
+COL_PATIENT_ID = 3
+COL_PATIENT_NAME = 4
+COL_SOURCE = 5
+COL_TASK1 = 6
+COL_TASK2 = 8
+COL_TASK3 = 10
+COL_COMPLETION = 12
+
+
+# ============================================================
+# ФИЛИАЛ 2
+# ============================================================
 
 F2_KEYWORDS = [
     "ф2",
@@ -77,7 +76,7 @@ F2_KEYWORDS = [
 
 
 # ============================================================
-# GOOGLE
+# GOOGLE CONNECTION
 # ============================================================
 
 def connect_google():
@@ -112,16 +111,19 @@ def get_signature(name):
     clean = re.sub(
         r"[^a-zа-яё\s.]",
         " ",
-        clean
+        clean,
     )
 
     clean = re.sub(
         r"\s+",
         " ",
-        clean
+        clean,
     ).strip()
 
-    parts = [p for p in clean.split(" ") if p]
+    parts = [
+        p for p in clean.split(" ")
+        if p
+    ]
 
     if not parts:
         return ""
@@ -129,28 +131,31 @@ def get_signature(name):
     surname = ""
     initials = ""
 
-    # Например:
-    # О.В. Нецветаева
-    if len(parts) >= 2 and len(parts[0]) <= 2 and "." in parts[0]:
+    if (
+        len(parts) >= 2
+        and len(parts[0]) <= 2
+        and "." in parts[0]
+    ):
         surname = parts[-1].replace(".", "")
 
         for part in parts[:-1]:
             part = part.replace(".", "")
+
             if part:
                 initials += part[0]
 
-    # Например:
-    # Нецветаева О.В.
-    # Нецветаева Ольга Викторовна
     else:
         surname = parts[0].replace(".", "")
 
         for part in parts[1:]:
             part = part.replace(".", "")
+
             if part:
                 initials += part[0]
 
-    return (surname + " " + initials).strip()
+    return (
+        surname + " " + initials
+    ).strip()
 
 
 # ============================================================
@@ -158,19 +163,27 @@ def get_signature(name):
 # ============================================================
 
 def get_doctors_contact_map(client):
-    spreadsheet = client.open_by_key(DOCTORS_DB_ID)
-    sheet = spreadsheet.worksheet(DOCTORS_SHEET_NAME)
+    spreadsheet = client.open_by_key(
+        DOCTORS_DB_ID
+    )
+
+    sheet = spreadsheet.worksheet(
+        DOCTORS_SHEET_NAME
+    )
 
     data = sheet.get_all_values()
 
     doctors_map = {}
 
     for row in data[1:]:
-        if len(row) <= 2:
+
+        if len(row) <= COL_DOCTOR_EMAIL:
             continue
 
         name = str(row[0]).strip()
-        email = str(row[COL_DOCTOR_EMAIL]).strip()
+        email = str(
+            row[COL_DOCTOR_EMAIL]
+        ).strip()
 
         if not name or not email:
             continue
@@ -189,8 +202,13 @@ def get_doctors_contact_map(client):
 # ПОИСК ВРАЧА
 # ============================================================
 
-def find_doctor_robust(doctor_name, doctors_map):
-    search_sig = get_signature(doctor_name)
+def find_doctor_robust(
+    doctor_name,
+    doctors_map,
+):
+    search_sig = get_signature(
+        doctor_name
+    )
 
     if not search_sig:
         return None
@@ -235,8 +253,12 @@ def find_doctor_robust(doctor_name, doctors_map):
             if (
                 not search_initials
                 or not db_initials
-                or search_initials.startswith(db_initials)
-                or db_initials.startswith(search_initials)
+                or search_initials.startswith(
+                    db_initials
+                )
+                or db_initials.startswith(
+                    search_initials
+                )
             ):
                 return doctor_data
 
@@ -252,12 +274,12 @@ def find_doctor_robust(doctor_name, doctors_map):
         if (
             len(search_surname) >= 4
             and len(db_surname) >= 4
-        ):
-            if (
+            and (
                 db_surname in search_surname
                 or search_surname in db_surname
-            ):
-                return doctor_data
+            )
+        ):
+            return doctor_data
 
     return None
 
@@ -266,7 +288,11 @@ def find_doctor_robust(doctor_name, doctors_map):
 # SMTP
 # ============================================================
 
-def send_email(to_email, subject, html_body):
+def send_email(
+    to_email,
+    subject,
+    html_body,
+):
     host = os.environ["SMTP_HOST"]
     port = int(os.environ["SMTP_PORT"])
     user = os.environ["SMTP_USER"]
@@ -280,47 +306,46 @@ def send_email(to_email, subject, html_body):
     message["Subject"] = subject
 
     message.set_content(
-        "BOTON: HTML-письмо. "
-        "Если HTML не отображается, откройте письмо в почтовом клиенте."
+        "BOTON: HTML-письмо."
     )
 
     message.add_alternative(
         html_body,
-        subtype="html"
+        subtype="html",
     )
 
     with smtplib.SMTP_SSL(
         host,
         port,
-        timeout=30
+        timeout=30,
     ) as smtp:
 
         smtp.login(
             user,
-            password
+            password,
         )
 
-        smtp.send_message(message)
+        smtp.send_message(
+            message
+        )
 
 
 # ============================================================
 # HTML ПИСЬМА
 # ============================================================
 
-def build_doctor_email(doctor_name, patients, today):
-    body = []
-
-    body.append(
-        "<html><body>"
-    )
-
-    body.append(
-        f"<p>Здравствуйте, {html.escape(doctor_name)}!</p>"
-    )
-
-    body.append(
-        f"<p><b>Задания на {html.escape(today)}</b></p>"
-    )
+def build_doctor_email(
+    doctor_name,
+    patients,
+    today,
+):
+    body = [
+        "<html><body>",
+        f"<p>Здравствуйте, "
+        f"{html.escape(doctor_name)}!</p>",
+        f"<p><b>Задания на "
+        f"{html.escape(today)}</b></p>",
+    ]
 
     for patient in patients:
 
@@ -337,13 +362,13 @@ def build_doctor_email(doctor_name, patients, today):
         )
 
         body.append(
-            f"<p><b>Пациент:</b> {patient_name}<br>"
-            f"<b>ОМС / ID:</b> {patient_id}</p>"
+            f"<p><b>Пациент:</b> "
+            f"{patient_name}<br>"
+            f"<b>ОМС / ID:</b> "
+            f"{patient_id}</p>"
         )
 
-        body.append(
-            "<ul>"
-        )
+        body.append("<ul>")
 
         for task in patient["tasks"]:
 
@@ -351,39 +376,36 @@ def build_doctor_email(doctor_name, patients, today):
                 f"<li>{html.escape(task)}</li>"
             )
 
-        body.append(
-            "</ul>"
-        )
+        body.append("</ul>")
+        body.append("</div>")
 
-        body.append(
-            "</div>"
-        )
-
-    body.append(
-        "<hr>"
-    )
-
-    body.append(
+    body.extend([
+        "<hr>",
         "<p>"
-        "Письмо сформировано автоматически системой BOTON."
-        "</p>"
-    )
-
-    body.append(
-        "</body></html>"
-    )
+        "Письмо сформировано автоматически "
+        "системой BOTON."
+        "</p>",
+        "</body></html>",
+    ])
 
     return "".join(body)
 
 
-def build_test_email(today, doctors_count, rows_count, tasks_count):
+def build_test_email(
+    today,
+    doctors_count,
+    rows_count,
+    tasks_count,
+):
     return f"""
 <html>
 <body>
 
-<p><b>BOTON — РЕАЛЬНЫЙ ТЕСТ ОТПРАВКИ</b></p>
+<p><b>BOTON — ТЕСТ ВЕРСИИ 1.1</b></p>
 
-<p>Тест выполнен успешно.</p>
+<p>
+Реальная проверка SMTP-отправки.
+</p>
 
 <table>
 <tr>
@@ -415,26 +437,19 @@ def build_test_email(today, doctors_count, rows_count, tasks_count):
 <br>
 
 <p>
-Это <b>реальное письмо через SMTP Яндекса</b>.
-</p>
-
-<p>
-В этом режиме:
+Проверено:
 </p>
 
 <ul>
-<li>врачи не получают письма;</li>
-<li>таблица Google Sheets не изменяется;</li>
-<li>колонка M не изменяется;</li>
-<li>письмо отправляется только на SMTP_USER.</li>
+<li>Google Sheets — OK</li>
+<li>SMTP Яндекса — OK</li>
+<li>реальная отправка — OK</li>
+<li>врачи — 0 писем</li>
+<li>колонка M — без изменений</li>
 </ul>
 
 <p>
-Если это письмо пришло — SMTP и отправка через GitHub Actions работают.
-</p>
-
-<p>
-BOTON
+Это тестовый режим BOTON.
 </p>
 
 </body>
@@ -443,16 +458,91 @@ BOTON
 
 
 # ============================================================
-# ОСНОВНАЯ ОБРАБОТКА
+# ФОРМИРОВАНИЕ СТАТУСА
+# ============================================================
+
+def make_success_status(
+    today,
+    target_email,
+    reserve=False,
+):
+    time_now = datetime.now(
+        MOSCOW_TZ
+    ).strftime("%H:%M:%S")
+
+    if reserve:
+        return (
+            f"ОТПРАВЛЕНО НА РЕЗЕРВ "
+            f"{today} {time_now}"
+        )
+
+    return (
+        f"ОТПРАВЛЕНО "
+        f"{today} {time_now}"
+    )
+
+
+def make_error_status(
+    today,
+):
+    time_now = datetime.now(
+        MOSCOW_TZ
+    ).strftime("%H:%M:%S")
+
+    return (
+        f"ОШИБКА ОТПРАВКИ "
+        f"{today} {time_now}"
+    )
+
+
+# ============================================================
+# ЗАПИСЬ В КОЛОНКУ M
+# ============================================================
+
+def write_statuses(
+    tasks_sheet,
+    status_updates,
+):
+    if not status_updates:
+        return
+
+    updates = []
+
+    for row_idx, status in status_updates.items():
+
+        updates.append({
+            "range": f"M{row_idx}",
+            "values": [[status]],
+        })
+
+    tasks_sheet.batch_update(
+        updates,
+        value_input_option="USER_ENTERED",
+    )
+
+    print(
+        "Записей в колонку M:",
+        len(updates),
+    )
+
+
+# ============================================================
+# ОСНОВНАЯ ФУНКЦИЯ
 # ============================================================
 
 def run_tasks_dispatch():
 
-    start_time = datetime.now(MOSCOW_TZ)
+    start_time = datetime.now(
+        MOSCOW_TZ
+    )
 
     print("=" * 60)
-    print(f"BOTON {VERSION}")
-    print("РЕЖИМ: ТОЛЬКО ТЕСТ НА СЕБЯ")
+    print(
+        f"BOTON {VERSION}"
+    )
+    print(
+        f"TEST_MODE = {TEST_MODE}"
+    )
     print("=" * 60)
 
     # --------------------------------------------------------
@@ -471,18 +561,26 @@ def run_tasks_dispatch():
 
     data = tasks_sheet.get_all_values()
 
-    print("Google Sheets: подключение успешно.")
-    print("Строк:", len(data))
+    print(
+        "Google Sheets: подключение успешно."
+    )
+
+    print(
+        "Строк:",
+        len(data),
+    )
 
     # --------------------------------------------------------
-    # База врачей
+    # Врачи
     # --------------------------------------------------------
 
-    doctors_map = get_doctors_contact_map(client)
+    doctors_map = get_doctors_contact_map(
+        client
+    )
 
     print(
         "Врачей в базе:",
-        len(doctors_map)
+        len(doctors_map),
     )
 
     # --------------------------------------------------------
@@ -495,11 +593,11 @@ def run_tasks_dispatch():
 
     print(
         "Дата заданий:",
-        today
+        today,
     )
 
     # --------------------------------------------------------
-    # Поиск заданий
+    # Сбор заданий
     # --------------------------------------------------------
 
     doctor_tasks = {}
@@ -508,7 +606,10 @@ def run_tasks_dispatch():
     skipped_other_branch = 0
     total_tasks = 0
 
-    for i in range(1, len(data)):
+    for i in range(
+        1,
+        len(data),
+    ):
 
         row = data[i]
 
@@ -554,6 +655,13 @@ def run_tasks_dispatch():
             row[COL_DOCTOR]
         ).strip()
 
+        if (
+            not doctor_name
+            or doctor_name.lower()
+            == "нет данных"
+        ):
+            doctor_name = "НЕИЗВЕСТНЫЙ ВРАЧ"
+
         # Пациент
         patient_name = str(
             row[COL_PATIENT_NAME]
@@ -569,7 +677,7 @@ def run_tasks_dispatch():
         for column in (
             COL_TASK1,
             COL_TASK2,
-            COL_TASK3
+            COL_TASK3,
         ):
 
             value = str(
@@ -577,40 +685,36 @@ def run_tasks_dispatch():
             ).strip()
 
             if value:
-                current_tasks.append(value)
+                current_tasks.append(
+                    value
+                )
 
         if not current_tasks:
             continue
 
-        if (
-            not doctor_name
-            or doctor_name.lower() == "нет данных"
-        ):
-            doctor_name = "НЕИЗВЕСТНЫЙ ВРАЧ"
-
         if doctor_name not in doctor_tasks:
             doctor_tasks[doctor_name] = []
 
-        doctor_tasks[doctor_name].append(
-            {
-                "row_idx": i + 1,
-                "patient_name": (
-                    patient_name
-                    or "Не указано"
-                ),
-                "patient_id": (
-                    patient_id
-                    or "Не указан"
-                ),
-                "tasks": current_tasks,
-            }
-        )
+        doctor_tasks[doctor_name].append({
+            "row_idx": i + 1,
+            "patient_name": (
+                patient_name
+                or "Не указано"
+            ),
+            "patient_id": (
+                patient_id
+                or "Не указан"
+            ),
+            "tasks": current_tasks,
+        })
 
         processed_rows += 1
-        total_tasks += len(current_tasks)
+        total_tasks += len(
+            current_tasks
+        )
 
     # --------------------------------------------------------
-    # Результат поиска
+    # Статистика
     # --------------------------------------------------------
 
     doctors_count = len(
@@ -619,34 +723,34 @@ def run_tasks_dispatch():
 
     print(
         "Найдено врачей:",
-        doctors_count
+        doctors_count,
     )
 
     print(
         "Строк с заданиями:",
-        processed_rows
+        processed_rows,
     )
 
     print(
         "Всего заданий:",
-        total_tasks
+        total_tasks,
     )
 
     print(
         "Пропущено других филиалов:",
-        skipped_other_branch
+        skipped_other_branch,
     )
 
     if not doctor_tasks:
 
         print(
-            "Новых заданий на сегодня для Филиала 2 нет."
+            "Новых заданий нет."
         )
 
         return
 
     # ========================================================
-    # БЕЗОПАСНЫЙ ТЕСТ
+    # TEST MODE
     # ========================================================
 
     if TEST_MODE:
@@ -657,11 +761,7 @@ def run_tasks_dispatch():
 
         print("-" * 60)
         print(
-            "TEST_MODE = True"
-        )
-
-        print(
-            "Отправляется ОДНО тестовое письмо."
+            "БЕЗОПАСНЫЙ ТЕСТ"
         )
 
         print(
@@ -673,19 +773,19 @@ def run_tasks_dispatch():
         )
 
         print(
-            "Изменение Google Sheets: НЕТ"
+            "Изменение M: НЕТ"
         )
 
         test_subject = (
-            f"[ТЕСТ] BOTON — проверка отправки "
-            f"{today}"
+            f"[ТЕСТ] BOTON v{VERSION} "
+            f"— {today}"
         )
 
         test_body = build_test_email(
-            today=today,
-            doctors_count=doctors_count,
-            rows_count=processed_rows,
-            tasks_count=total_tasks,
+            today,
+            doctors_count,
+            processed_rows,
+            total_tasks,
         )
 
         send_email(
@@ -695,15 +795,11 @@ def run_tasks_dispatch():
         )
 
         print(
-            "ТЕСТОВОЕ ПИСЬМО УСПЕШНО ОТПРАВЛЕНО."
+            "Тестовое письмо успешно отправлено."
         )
 
         print(
             "Колонка M НЕ изменялась."
-        )
-
-        print(
-            "Письма врачам НЕ отправлялись."
         )
 
         duration = (
@@ -711,38 +807,37 @@ def run_tasks_dispatch():
             - start_time
         ).total_seconds()
 
-        print("-" * 60)
         print(
-            f"Время выполнения: {duration:.1f} сек."
+            f"Время выполнения: "
+            f"{duration:.1f} сек."
         )
 
         print(
-            "BOTON: БЕЗОПАСНЫЙ ТЕСТ ЗАВЕРШЁН."
+            "BOTON: ТЕСТ 1.1 ЗАВЕРШЁН."
         )
 
         return
 
     # ========================================================
-    # РЕАЛЬНАЯ РАССЫЛКА
+    # REAL MODE
     # ========================================================
 
     print("-" * 60)
     print(
-        "TEST_MODE = False"
+        "РЕАЛЬНАЯ РАССЫЛКА"
     )
 
-    print(
-        "Начинается реальная рассылка врачам."
-    )
+    status_updates = {}
 
     doctors_sent = 0
     doctors_failed = 0
+    reserve_sent = 0
 
     for doctor_name, patients in doctor_tasks.items():
 
         doctor_data = find_doctor_robust(
             doctor_name,
-            doctors_map
+            doctors_map,
         )
 
         if (
@@ -771,6 +866,10 @@ def run_tasks_dispatch():
             today,
         )
 
+        # ----------------------------------------------------
+        # Основная почта
+        # ----------------------------------------------------
+
         try:
 
             send_email(
@@ -781,22 +880,34 @@ def run_tasks_dispatch():
 
             doctors_sent += 1
 
-            print(
-                "Письмо отправлено."
+            status = make_success_status(
+                today,
+                target_email,
+                reserve=using_reserve,
             )
 
-            # Здесь будет запись в M.
-            # В тестовом режиме этот блок
-            # недостижим.
+            for patient in patients:
+                status_updates[
+                    patient["row_idx"]
+                ] = status
+
+            if using_reserve:
+                reserve_sent += 1
+
+            print(
+                "Отправлено: 1"
+            )
 
         except Exception as error:
 
             print(
-                "Ошибка отправки письма."
+                "Основная отправка не удалась."
             )
 
-            # Если основная почта не работает,
-            # пробуем резервную.
+            # ------------------------------------------------
+            # Резервная почта
+            # ------------------------------------------------
+
             if not using_reserve:
 
                 try:
@@ -808,22 +919,75 @@ def run_tasks_dispatch():
                     )
 
                     doctors_sent += 1
+                    reserve_sent += 1
+
+                    status = make_success_status(
+                        today,
+                        DEFAULT_EMAIL,
+                        reserve=True,
+                    )
+
+                    for patient in patients:
+                        status_updates[
+                            patient["row_idx"]
+                        ] = status
 
                     print(
-                        "Письмо отправлено на резервную почту."
+                        "Резервная отправка успешна."
                     )
 
                 except Exception:
 
                     doctors_failed += 1
 
+                    status = make_error_status(
+                        today
+                    )
+
+                    for patient in patients:
+                        status_updates[
+                            patient["row_idx"]
+                        ] = status
+
                     print(
-                        "Резервная отправка также не удалась."
+                        "Основная и резервная "
+                        "отправка не удались."
                     )
 
             else:
 
                 doctors_failed += 1
+
+                status = make_error_status(
+                    today
+                )
+
+                for patient in patients:
+                    status_updates[
+                        patient["row_idx"]
+                    ] = status
+
+                print(
+                    "Резервная отправка не удалась."
+                )
+
+        # Небольшая пауза между врачами
+        time.sleep(0.5)
+
+    # ========================================================
+    # ЗАПИСЬ В M
+    # ========================================================
+
+    if status_updates:
+
+        write_statuses(
+            tasks_sheet,
+            status_updates,
+        )
+
+    # ========================================================
+    # ИТОГ
+    # ========================================================
 
     duration = (
         datetime.now(MOSCOW_TZ)
@@ -835,32 +999,43 @@ def run_tasks_dispatch():
     print("=" * 60)
 
     print(
-        "Врачей:",
-        doctors_count
+        "Врачей найдено:",
+        doctors_count,
     )
 
     print(
-        "Отправлено:",
-        doctors_sent
+        "Успешно отправлено:",
+        doctors_sent,
+    )
+
+    print(
+        "Через резерв:",
+        reserve_sent,
     )
 
     print(
         "Ошибок:",
-        doctors_failed
+        doctors_failed,
     )
 
     print(
-        "Строк:",
-        processed_rows
+        "Строк с заданиями:",
+        processed_rows,
     )
 
     print(
-        "Заданий:",
-        total_tasks
+        "Всего заданий:",
+        total_tasks,
     )
 
     print(
-        f"Время выполнения: {duration:.1f} сек."
+        "Записано статусов в M:",
+        len(status_updates),
+    )
+
+    print(
+        f"Время выполнения: "
+        f"{duration:.1f} сек."
     )
 
     print(
