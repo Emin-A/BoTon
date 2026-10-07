@@ -2,9 +2,9 @@ name: Boton
 
 on:
   workflow_dispatch:
+
   schedule:
-    - cron: "0,30 5-9 * * *"
-    - cron: "0 10 * * *"
+    - cron: "0,15,30,45 5-10 * * *"
 
 concurrency:
   group: boton-dispatch
@@ -35,5 +35,10 @@ jobs:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SMTP_FROM_EMAIL: ${{ secrets.SMTP_FROM_EMAIL }}
+
+          IMAP_HOST: ${{ secrets.IMAP_HOST }}
+          IMAP_PORT: ${{ secrets.IMAP_PORT }}
+          IMAP_USER: ${{ secrets.IMAP_USER }}
+          IMAP_PASSWORD: ${{ secrets.IMAP_PASSWORD }}
 
         run: python main.py
