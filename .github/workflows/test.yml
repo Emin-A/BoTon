@@ -17,5 +17,10 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Установить библиотеки
+        run: pip install -r requirements.txt
+
       - name: Запустить Python
+        env:
+          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
         run: python main.py
