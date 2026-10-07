@@ -1,44 +1,42 @@
-name: Boton
-
-on:
-  workflow_dispatch:
-
-  schedule:
-    - cron: "0,15,30,45 5-10 * * *"
-
-concurrency:
-  group: boton-dispatch
-  cancel-in-progress: false
-
-jobs:
-  bot:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Получить код
-        uses: actions/checkout@v4
-
-      - name: Установить Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
       - name: Установить библиотеки
         run: pip install -r requirements.txt
+
+      - name: Проверить IMAP Yandex
+        run: |
+          echo "Проверка DNS:"
+          getent hosts imap.yandex.ru || true
+
+          echo "Проверка порта 993:"
+          python - <<'PY'
+          import socket
+
+          host = "imap.yandex.ru"
+          port = 993
+
+          try:
+              ip = socket.gethostbyname(host)
+              print(f"DNS OK: {host} -> {ip}")
+          except Exception as e:
+              print(f"DNS ERROR: {e}")
+
+          try:
+              s = socket.create_connection((host, port), timeout=10)
+              print("TCP 993 OK")
+              s.close()
+          except Exception as e:
+              print(f"TCP ERROR: {e}")
+          PY
 
       - name: Запустить BOTON
         env:
           GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
-
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SMTP_FROM_EMAIL: ${{ secrets.SMTP_FROM_EMAIL }}
-
           IMAP_HOST: ${{ secrets.IMAP_HOST }}
           IMAP_PORT: ${{ secrets.IMAP_PORT }}
           IMAP_USER: ${{ secrets.IMAP_USER }}
           IMAP_PASSWORD: ${{ secrets.IMAP_PASSWORD }}
-
         run: python main.py
