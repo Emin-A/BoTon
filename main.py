@@ -1,24 +1,23 @@
 import os
-import json
 import re
-import html
 import smtplib
-from datetime import datetime
+from datetime import datetime, date
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from zoneinfo import ZoneInfo
-from email.message import EmailMessage
 
 import gspread
 from google.oauth2.service_account import Credentials
 
 
 # ============================================================
-# BOTON v1.3
+# BOTON v1.4
 # ============================================================
 
-VERSION = "1.3"
+VERSION = "1.4"
 
-# False = реальная рассылка
-# True  = тест только на SMTP_USER
+# False = реальная отправка
+# True  = тестовая отправка только на SMTP_USER
 TEST_MODE = False
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
@@ -28,25 +27,15 @@ MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 # GOOGLE SHEETS
 # ============================================================
 
-TASKS_SPREADSHEET_ID = (
-    "13maufkGFPUdNE-d_i_nvC4l5xf3ParmuFCNYJ32wmVk"
-)
+TASKS_SHEET_ID = "13maufkGFPUdNE-d_i_nvC4l5xf3ParmuFCNYJ32wmVk"
+TASKS_WORKSHEET = "Лист1"
 
-TASKS_SHEET_NAME = "Лист1"
-
-DOCTORS_DB_ID = (
-    "1grwcVilkiwOI01UgWu4jrhOLV2GVM7TJ6TqlXE7enAU"
-)
-
-DOCTORS_SHEET_NAME = "Врачи"
-
-COL_DOCTOR_EMAIL = 2
-
-DEFAULT_EMAIL = "eagaverdiev@mosmedzdrav.ru"
+DOCTORS_SHEET_ID = "1grwcVilkiwOI01UgWu4jrhOLV2GVM7TJ6TqlXE7enAU"
+DOCTORS_WORKSHEET = "Врачи"
 
 
 # ============================================================
-# СТОЛБЦЫ ЗАДАНИЙ
+# КОЛОНКИ — 0-based
 # ============================================================
 
 COL_DATE = 0
@@ -60,12 +49,18 @@ COL_TASK2 = 8
 COL_TASK3 = 10
 COL_COMPLETION = 12
 
+# База врачей:
+# A = ФИО
+# B = Chat ID
+# C = Email
+COL_DOCTOR_EMAIL = 2
+
 
 # ============================================================
 # ФИЛИАЛ 2
 # ============================================================
 
-F2_KEYWORDS = [
+BRANCH2_KEYWORDS = [
     "ф2",
     "филиал 2",
     "филиал № 2",
@@ -77,376 +72,333 @@ F2_KEYWORDS = [
 
 
 # ============================================================
-# GOOGLE
+# РЕЗЕРВНАЯ ПОЧТА
 # ============================================================
 
-def connect_google():
-    service_account_info = json.loads(
-        os.environ["GOOGLE_SERVICE_ACCOUNT"]
-    )
-
-    credentials = Credentials.from_service_account_info(
-        service_account_info,
-        scopes=[
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive.readonly",
-        ],
-    )
-
-    return gspread.authorize(credentials)
-
-
-# ============================================================
-# ФИО → ФАМИЛИЯ + ИНИЦИАЛЫ
-# ============================================================
-
-def get_signature(name):
-    if not name:
-        return ""
-
-    clean = str(name).lower().replace("ё", "е")
-    clean = re.sub(r"[^a-zа-яё\s.]", " ", clean)
-    clean = re.sub(r"\s+", " ", clean).strip()
-
-    parts = [
-        part
-        for part in clean.split()
-        if part
-    ]
-
-    if not parts:
-        return ""
-
-    # Формат: О.В. Нецветаева
-    if (
-        len(parts) >= 2
-        and len(parts[0]) <= 2
-        and "." in parts[0]
-    ):
-        surname = parts[-1].replace(".", "")
-        initials = ""
-
-        for part in parts[:-1]:
-            part = part.replace(".", "")
-
-            if part:
-                initials += part[0]
-
-    # Форматы:
-    # Нецветаева О.В.
-    # Нецветаева Ольга Викторовна
-    else:
-        surname = parts[0].replace(".", "")
-        initials = ""
-
-        for part in parts[1:]:
-            part = part.replace(".", "")
-
-            if part:
-                initials += part[0]
-
-    return f"{surname} {initials}".strip()
-
-
-# ============================================================
-# БАЗА ВРАЧЕЙ
-# ============================================================
-
-def get_doctors_contact_map(client):
-    sheet = client.open_by_key(
-        DOCTORS_DB_ID
-    ).worksheet(
-        DOCTORS_SHEET_NAME
-    )
-
-    doctors_map = {}
-
-    rows = sheet.get_all_values()
-
-    for row in rows[1:]:
-        if len(row) <= COL_DOCTOR_EMAIL:
-            continue
-
-        name = str(row[0]).strip()
-        email = str(
-            row[COL_DOCTOR_EMAIL]
-        ).strip()
-
-        if not name or not email:
-            continue
-
-        signature = get_signature(name)
-
-        if signature:
-            doctors_map[signature] = {
-                "email": email
-            }
-
-    return doctors_map
-
-
-# ============================================================
-# ПОИСК ВРАЧА
-# ============================================================
-
-def find_doctor_robust(
-    doctor_name,
-    doctors_map,
-):
-    search_sig = get_signature(
-        doctor_name
-    )
-
-    if not search_sig:
-        return None
-
-    # 1. Точное совпадение
-    if search_sig in doctors_map:
-        return doctors_map[search_sig]
-
-    parts = search_sig.split()
-
-    surname = (
-        parts[0]
-        if parts
-        else ""
-    )
-
-    initials = (
-        parts[1]
-        if len(parts) > 1
-        else ""
-    )
-
-    # 2. Фамилия + совместимые инициалы
-    for key, data in doctors_map.items():
-
-        db_parts = key.split()
-
-        db_surname = (
-            db_parts[0]
-            if db_parts
-            else ""
-        )
-
-        db_initials = (
-            db_parts[1]
-            if len(db_parts) > 1
-            else ""
-        )
-
-        if db_surname == surname:
-
-            if (
-                not initials
-                or not db_initials
-                or initials.startswith(db_initials)
-                or db_initials.startswith(initials)
-            ):
-                return data
-
-    # 3. Частичное совпадение фамилии
-    for key, data in doctors_map.items():
-
-        db_surname = (
-            key.split()[0]
-            if key
-            else ""
-        )
-
-        if (
-            len(surname) >= 4
-            and len(db_surname) >= 4
-            and (
-                db_surname in surname
-                or surname in db_surname
-            )
-        ):
-            return data
-
-    return None
+RESERVE_EMAIL = "eagaverdiev@mosmedzdrav.ru"
 
 
 # ============================================================
 # SMTP
 # ============================================================
 
-def smtp_connect():
-    host = os.environ["SMTP_HOST"]
-    port = int(
-        os.environ["SMTP_PORT"]
-    )
-    user = os.environ["SMTP_USER"]
-    password = os.environ["SMTP_PASSWORD"]
-
-    smtp = smtplib.SMTP_SSL(
-        host,
-        port,
-        timeout=30,
-    )
-
-    smtp.login(
-        user,
-        password,
-    )
-
-    return smtp
-
-
-def send_email(
-    smtp,
-    to_email,
-    subject,
-    html_body,
-):
-    from_email = os.environ[
-        "SMTP_FROM_EMAIL"
-    ]
-
-    message = EmailMessage()
-
-    message["From"] = from_email
-    message["To"] = to_email
-    message["Subject"] = subject
-
-    message.set_content(
-        "BOTON: HTML-письмо."
-    )
-
-    message.add_alternative(
-        html_body,
-        subtype="html",
-    )
-
-    smtp.send_message(message)
+SMTP_HOST = os.environ["SMTP_HOST"]
+SMTP_PORT = int(os.environ["SMTP_PORT"])
+SMTP_USER = os.environ["SMTP_USER"]
+SMTP_PASSWORD = os.environ["SMTP_PASSWORD"]
+SMTP_FROM_EMAIL = os.environ["SMTP_FROM_EMAIL"]
 
 
 # ============================================================
-# HTML ПИСЬМО ВРАЧУ
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ============================================================
 
-def build_doctor_email(
-    doctor_name,
-    patients,
-    today,
-):
-    body = [
-        "<html><body>",
-        (
-            f"<p>Здравствуйте, "
-            f"{html.escape(doctor_name)}!</p>"
-        ),
-        (
-            f"<p><b>Задания на "
-            f"{html.escape(today)}</b></p>"
-        ),
+def normalize_text(value):
+    if value is None:
+        return ""
+
+    value = str(value).strip().lower()
+    value = value.replace("ё", "е")
+
+    value = re.sub(r"\s+", " ", value)
+
+    return value
+
+
+def normalize_branch(value):
+    value = normalize_text(value)
+
+    value = value.replace("№", " ")
+    value = re.sub(r"[()]", " ", value)
+    value = re.sub(r"\s+", " ", value)
+
+    return value.strip()
+
+
+def is_branch2(value):
+    text = normalize_branch(value)
+
+    for keyword in BRANCH2_KEYWORDS:
+        if normalize_branch(keyword) in text:
+            return True
+
+    return False
+
+
+def normalize_date(value):
+    """
+    Приводит различные варианты даты к YYYY-MM-DD.
+    """
+
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        return value.date()
+
+    if isinstance(value, date):
+        return value
+
+    text = str(value).strip()
+
+    if not text:
+        return None
+
+    # Убираем время, если оно есть
+    text = text.split(" ")[0]
+
+    formats = [
+        "%d.%m.%Y",
+        "%d.%m.%y",
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+        "%d/%m/%Y",
     ]
 
-    for patient in patients:
+    for fmt in formats:
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            pass
 
-        body.append(
-            "<div style='margin-bottom:20px;'>"
+    return None
+
+
+def get_signature(fio):
+    """
+    Нормализует ФИО в формат:
+    фамилия + инициалы
+
+    Примеры:
+    О.В. Нецветаева       -> нецветаева ов
+    Нецветаева О.В.       -> нецветаева ов
+    Нецветаева Ольга Викторовна -> нецветаева ов
+    """
+
+    text = normalize_text(fio)
+
+    if not text:
+        return ""
+
+    # Убираем точки и лишние символы,
+    # но сохраняем пробелы.
+    cleaned = re.sub(r"[^а-яa-z\s-]", " ", text)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+    parts = cleaned.split()
+
+    if not parts:
+        return ""
+
+    # Если есть инициалы вида "о в"
+    initials = []
+
+    for part in parts:
+        if len(part) == 1 and part.isalpha():
+            initials.append(part)
+
+    # Случай:
+    # Нецветаева О В
+    if initials:
+        surname_candidates = [
+            p for p in parts
+            if len(p) > 1
+        ]
+
+        if surname_candidates:
+            surname = surname_candidates[0]
+            return surname + " " + "".join(initials[:2])
+
+    # Инициалы могли быть слиты:
+    # "О.В Нецветаева"
+    original = normalize_text(fio)
+
+    m = re.search(
+        r"\b([а-яa-z])\s*[\.\s]\s*([а-яa-z])\b",
+        original
+    )
+
+    if m:
+        init = m.group(1) + m.group(2)
+
+        words = re.findall(r"[а-яa-z-]+", original)
+
+        surname = None
+
+        for word in words:
+            if len(word) > 2 and word not in {
+                m.group(1),
+                m.group(2)
+            }:
+                surname = word
+                break
+
+        if surname:
+            return surname + " " + init
+
+    # Полное ФИО:
+    # Нецветаева Ольга Викторовна
+    if len(parts) >= 3:
+        surname = parts[0]
+
+        first_name = parts[1]
+        patronymic = parts[2]
+
+        return (
+            surname
+            + " "
+            + first_name[0]
+            + patronymic[0]
         )
 
-        body.append(
-            f"<p><b>Пациент:</b> "
-            f"{html.escape(patient['patient_name'])}"
-            f"<br>"
-            f"<b>ОМС / ID:</b> "
-            f"{html.escape(patient['patient_id'])}"
-            f"</p>"
-        )
+    # Фамилия + имя
+    if len(parts) == 2:
+        surname = parts[0]
+        second = parts[1]
 
-        body.append(
-            "<ul>"
-        )
+        if len(second) >= 1:
+            return surname + " " + second[0]
 
-        for task in patient["tasks"]:
+    return normalize_text(fio)
 
-            body.append(
-                f"<li>{html.escape(task)}</li>"
+
+def doctor_matches(sheet_fio, doctor_fio):
+    """
+    Надёжное сопоставление врача.
+
+    1. Точное совпадение подписи.
+    2. Одинаковая фамилия + совместимые инициалы.
+    3. Частичное совпадение фамилии.
+    """
+
+    a = normalize_text(sheet_fio)
+    b = normalize_text(doctor_fio)
+
+    if not a or not b:
+        return False
+
+    sig_a = get_signature(a)
+    sig_b = get_signature(b)
+
+    # 1. Полное совпадение нормализованной подписи
+    if sig_a and sig_b and sig_a == sig_b:
+        return True
+
+    # Разбираем подписи
+    pa = sig_a.split()
+    pb = sig_b.split()
+
+    if len(pa) >= 2 and len(pb) >= 2:
+
+        surname_a = pa[0]
+        initials_a = pa[1]
+
+        surname_b = pb[0]
+        initials_b = pb[1]
+
+        # 2. Одинаковая фамилия.
+        # Инициалы могут быть полными или частичными.
+        if surname_a == surname_b:
+
+            if (
+                initials_a.startswith(initials_b)
+                or initials_b.startswith(initials_a)
+            ):
+                return True
+
+    # 3. Частичное совпадение фамилии
+    # Только если фамилии достаточно длинные.
+    if len(pa) >= 1 and len(pb) >= 1:
+
+        surname_a = pa[0]
+        surname_b = pb[0]
+
+        if (
+            len(surname_a) >= 4
+            and len(surname_b) >= 4
+            and (
+                surname_a in surname_b
+                or surname_b in surname_a
             )
+        ):
+            return True
 
-        body.append(
-            "</ul>"
+    return False
+
+
+def build_doctor_db(doctors_data):
+    """
+    Возвращает список:
+    [
+        {
+            "fio": "...",
+            "email": "..."
+        }
+    ]
+    """
+
+    doctors = []
+
+    for row in doctors_data[1:]:
+        if not row:
+            continue
+
+        fio = row[0].strip() if len(row) > 0 else ""
+
+        email = (
+            row[COL_DOCTOR_EMAIL].strip()
+            if len(row) > COL_DOCTOR_EMAIL
+            else ""
         )
 
-        body.append(
-            "</div>"
-        )
+        if not fio:
+            continue
 
-    body.extend([
-        "<hr>",
-        "<p>"
-        "Письмо сформировано автоматически "
-        "системой BOTON."
-        "</p>",
-        "</body></html>",
-    ])
+        doctors.append({
+            "fio": fio,
+            "email": email,
+        })
 
-    return "".join(body)
+    return doctors
 
 
-# ============================================================
-# ТЕСТОВОЕ ПИСЬМО
-# ============================================================
+def find_doctor(sheet_fio, doctors):
+    """
+    Ищет врача в базе.
+    """
 
-def build_test_email(
-    today,
-    doctors_count,
-    rows_count,
-    tasks_count,
-):
-    return f"""
-<html>
-<body>
+    for doctor in doctors:
+        if doctor_matches(sheet_fio, doctor["fio"]):
+            return doctor
 
-<p><b>BOTON v{VERSION} — ТЕСТ</b></p>
-
-<p>Реальный тест SMTP.</p>
-
-<table>
-
-<tr>
-<td><b>Дата:</b></td>
-<td>{html.escape(today)}</td>
-</tr>
-
-<tr>
-<td><b>Врачей:</b></td>
-<td>{doctors_count}</td>
-</tr>
-
-<tr>
-<td><b>Строк:</b></td>
-<td>{rows_count}</td>
-</tr>
-
-<tr>
-<td><b>Заданий:</b></td>
-<td>{tasks_count}</td>
-</tr>
-
-</table>
-
-<p>
-Врачи не получают письма.
-Колонка M не изменяется.
-</p>
-
-</body>
-</html>
-"""
+    return None
 
 
-# ============================================================
-# СТАТУС ДЛЯ M
-# ============================================================
+def get_tasks_from_row(row):
+    """
+    Забирает задания из G, I, K.
+    """
+
+    tasks = []
+
+    for index in (
+        COL_TASK1,
+        COL_TASK2,
+        COL_TASK3,
+    ):
+        if len(row) <= index:
+            continue
+
+        value = str(row[index]).strip()
+
+        if value:
+            tasks.append(value)
+
+    return tasks
+
 
 def make_status(email):
-    now = datetime.now(
-        MOSCOW_TZ
-    )
+    now = datetime.now(MOSCOW_TZ)
 
     return (
         f"✅ Отправлено "
@@ -456,9 +408,7 @@ def make_status(email):
 
 
 def make_reserve_status():
-    now = datetime.now(
-        MOSCOW_TZ
-    )
+    now = datetime.now(MOSCOW_TZ)
 
     return (
         f"✅ Отправлено "
@@ -468,9 +418,7 @@ def make_reserve_status():
 
 
 def make_error_status():
-    now = datetime.now(
-        MOSCOW_TZ
-    )
+    now = datetime.now(MOSCOW_TZ)
 
     return (
         f"❌ Ошибка отправки "
@@ -478,45 +426,60 @@ def make_error_status():
     )
 
 
-# ============================================================
-# ЗАПИСЬ M
-# ============================================================
+def send_email(smtp, to_email, doctor_name, tasks):
+    """
+    Отправляет письмо врачу.
+    """
 
-def write_statuses(
-    tasks_sheet,
-    status_updates,
-):
-    if not status_updates:
-        return
+    message = MIMEMultipart("alternative")
 
-    updates = [
-        {
-            "range": f"M{row_idx}",
-            "values": [[status]],
-        }
-        for row_idx, status
-        in status_updates.items()
-    ]
+    message["From"] = SMTP_FROM_EMAIL
+    message["To"] = to_email
+    message["Subject"] = (
+        f"Задания врачу на "
+        f"{datetime.now(MOSCOW_TZ).strftime('%d.%m.%Y')}"
+    )
 
-    tasks_sheet.batch_update(
-        updates,
-        value_input_option="USER_ENTERED",
+    html_items = ""
+
+    for task in tasks:
+        html_items += f"<li>{task}</li>"
+
+    html = f"""
+    <html>
+      <body>
+        <p>Здравствуйте, {doctor_name}.</p>
+
+        <p>Задания на сегодня:</p>
+
+        <ul>
+          {html_items}
+        </ul>
+
+        <p>
+          Система BoTon
+        </p>
+      </body>
+    </html>
+    """
+
+    message.attach(
+        MIMEText(html, "html", "utf-8")
+    )
+
+    smtp.sendmail(
+        SMTP_FROM_EMAIL,
+        [to_email],
+        message.as_string(),
     )
 
 
-# ============================================================
-# ЧТЕНИЕ ВСЕГО ЛИСТА
-# ============================================================
-
-def read_full_tasks_sheet(
-    tasks_sheet
-):
+def read_full_tasks_sheet(tasks_sheet):
     """
-    get_all_values() может вернуть только область,
-    которую Google считает заполненной.
+    Читаем явный диапазон A:M по физическому размеру листа.
 
-    Здесь читаем весь физический диапазон листа
-    по колонкам A:M.
+    Google может не возвращать хвост полностью пустых строк,
+    поэтому дополнительно используем row_count.
     """
 
     last_row = tasks_sheet.row_count
@@ -530,241 +493,394 @@ def read_full_tasks_sheet(
 
 
 # ============================================================
-# ОСНОВНАЯ ФУНКЦИЯ
+# ОСНОВНАЯ ПРОГРАММА
 # ============================================================
 
-def run_tasks_dispatch():
+def main():
 
-    started = datetime.now(
-        MOSCOW_TZ
+    print("=" * 60)
+    print(f"BOTON v{VERSION}")
+    print(f"TEST_MODE = {TEST_MODE}")
+    print("=" * 60)
+
+    # --------------------------------------------------------
+    # GOOGLE AUTH
+    # --------------------------------------------------------
+
+    service_account_json = os.environ[
+        "GOOGLE_SERVICE_ACCOUNT"
+    ]
+
+    credentials = Credentials.from_service_account_info(
+        eval(service_account_json),
+        scopes=[
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ],
     )
 
-    print(
-        "=" * 60
+    gc = gspread.authorize(credentials)
+
+    # --------------------------------------------------------
+    # ОТКРЫВАЕМ ТАБЛИЦЫ
+    # --------------------------------------------------------
+
+    tasks_book = gc.open_by_key(
+        TASKS_SHEET_ID
     )
 
-    print(
-        f"BOTON v{VERSION}"
+    tasks_sheet = tasks_book.worksheet(
+        TASKS_WORKSHEET
     )
 
-    print(
-        f"TEST_MODE = {TEST_MODE}"
+    doctors_book = gc.open_by_key(
+        DOCTORS_SHEET_ID
     )
 
-    print(
-        "=" * 60
+    doctors_sheet = doctors_book.worksheet(
+        DOCTORS_WORKSHEET
     )
 
     # --------------------------------------------------------
-    # Google
+    # ЧТЕНИЕ
     # --------------------------------------------------------
-
-    client = connect_google()
-
-    tasks_sheet = client.open_by_key(
-        TASKS_SPREADSHEET_ID
-    ).worksheet(
-        TASKS_SHEET_NAME
-    )
 
     data = read_full_tasks_sheet(
         tasks_sheet
     )
 
-    print(
-        "Google Sheets: OK"
+    doctors_data = doctors_sheet.get_all_values()
+
+    doctors = build_doctor_db(
+        doctors_data
     )
 
-    print(
-        "Прочитано строк:",
-        len(data),
-    )
-
+    print("Google Sheets: OK")
+    print("Прочитано строк:", len(data))
     print(
         "Физических строк листа:",
-        tasks_sheet.row_count,
+        tasks_sheet.row_count
+    )
+    print(
+        "Врачей в базе:",
+        len(doctors)
     )
 
-    # --------------------------------------------------------
-    # Дата Москва
-    # --------------------------------------------------------
-
-    today = started.strftime(
-        "%d.%m.%Y"
-    )
+    today = datetime.now(
+        MOSCOW_TZ
+    ).date()
 
     print(
         "Дата:",
-        today,
+        today.strftime("%d.%m.%Y")
     )
 
     # --------------------------------------------------------
-    # Фильтрация
+    # ДИАГНОСТИКА ФИЛЬТРОВ
     # --------------------------------------------------------
 
-    doctor_tasks = {}
+    stats = {
+        "empty_rows": 0,
+        "bad_date": 0,
+        "other_date": 0,
+        "other_branch": 0,
+        "already_done": 0,
+        "no_doctor": 0,
+        "doctor_not_found": 0,
+        "no_tasks": 0,
+        "accepted": 0,
+    }
 
-    skipped = 0
-    processed_rows = 0
-    total_tasks = 0
+    # Для безопасной диагностики показываем только
+    # технические значения.
+    branch_counter = {}
+    date_counter = {}
 
-    for i, row in enumerate(
-        data[1:],
-        start=2,
+    # --------------------------------------------------------
+    # ГРУППИРОВКА
+    # --------------------------------------------------------
+
+    grouped = {}
+
+    for row_number, row in enumerate(
+        data,
+        start=1
     ):
 
-        if len(row) < 13:
+        if not row:
+            stats["empty_rows"] += 1
             continue
 
         # ----------------------------------------------------
-        # M заполнена → уже отправлено
+        # Диагностика даты
         # ----------------------------------------------------
 
-        completion = str(
-            row[COL_COMPLETION]
-        ).strip()
+        raw_date = (
+            row[COL_DATE]
+            if len(row) > COL_DATE
+            else ""
+        )
 
-        if (
-            completion
-            and completion.lower()
-            not in (
-                "null",
-                "undefined",
+        parsed_date = normalize_date(
+            raw_date
+        )
+
+        if parsed_date is None:
+            stats["bad_date"] += 1
+        else:
+            date_key = parsed_date.strftime(
+                "%d.%m.%Y"
             )
-        ):
-            continue
+
+            date_counter[date_key] = (
+                date_counter.get(
+                    date_key,
+                    0
+                ) + 1
+            )
+
+        # ----------------------------------------------------
+        # Филиал
+        # ----------------------------------------------------
+
+        raw_branch = (
+            row[COL_BRANCH]
+            if len(row) > COL_BRANCH
+            else ""
+        )
+
+        branch_key = normalize_branch(
+            raw_branch
+        )
+
+        if branch_key:
+            branch_counter[branch_key] = (
+                branch_counter.get(
+                    branch_key,
+                    0
+                ) + 1
+            )
 
         # ----------------------------------------------------
         # Дата
         # ----------------------------------------------------
 
-        if (
-            str(row[COL_DATE]).strip()
-            != today
-        ):
+        if parsed_date != today:
+
+            stats["other_date"] += 1
             continue
 
         # ----------------------------------------------------
-        # Филиал 2
+        # Филиал
         # ----------------------------------------------------
 
-        branch = str(
-            row[COL_BRANCH]
-        ).strip().lower()
-
-        if not any(
-            keyword.lower() in branch
-            for keyword in F2_KEYWORDS
+        if not is_branch2(
+            raw_branch
         ):
-            skipped += 1
+
+            stats["other_branch"] += 1
             continue
 
         # ----------------------------------------------------
-        # Врач
+        # M — статус
         # ----------------------------------------------------
 
-        doctor_name = str(
-            row[COL_DOCTOR]
-        ).strip()
+        completion = (
+            str(row[COL_COMPLETION]).strip()
+            if len(row) > COL_COMPLETION
+            else ""
+        )
+
+        completion_normalized = normalize_text(
+            completion
+        )
 
         if (
-            not doctor_name
-            or doctor_name.lower()
-            == "нет данных"
-        ):
-            doctor_name = (
-                "НЕИЗВЕСТНЫЙ ВРАЧ"
-            )
-
-        # ----------------------------------------------------
-        # Пациент
-        # ----------------------------------------------------
-
-        patient_name = str(
-            row[COL_PATIENT_NAME]
-        ).strip()
-
-        patient_id = str(
-            row[COL_PATIENT_ID]
-        ).strip()
-
-        # ----------------------------------------------------
-        # Задания
-        # ----------------------------------------------------
-
-        tasks = []
-
-        for col in (
-            COL_TASK1,
-            COL_TASK2,
-            COL_TASK3,
+            completion_normalized
+            and completion_normalized
+            not in {
+                "null",
+                "undefined",
+            }
         ):
 
-            value = str(
-                row[col]
-            ).strip()
+            stats["already_done"] += 1
+            continue
 
-            if value:
-                tasks.append(
-                    value
-                )
+        # ----------------------------------------------------
+        # ВРАЧ
+        # ----------------------------------------------------
+
+        doctor_fio = (
+            str(row[COL_DOCTOR]).strip()
+            if len(row) > COL_DOCTOR
+            else ""
+        )
+
+        if not doctor_fio:
+
+            stats["no_doctor"] += 1
+            continue
+
+        doctor = find_doctor(
+            doctor_fio,
+            doctors
+        )
+
+        if doctor is None:
+
+            stats["doctor_not_found"] += 1
+            continue
+
+        # ----------------------------------------------------
+        # ЗАДАНИЯ
+        # ----------------------------------------------------
+
+        tasks = get_tasks_from_row(
+            row
+        )
 
         if not tasks:
+
+            stats["no_tasks"] += 1
             continue
 
-        # ----------------------------------------------------
-        # Группировка по врачу
-        # ----------------------------------------------------
+        stats["accepted"] += 1
 
-        doctor_tasks.setdefault(
-            doctor_name,
-            []
-        ).append({
-            "row_idx": i,
-            "patient_name": (
-                patient_name
-                or "Не указано"
-            ),
-            "patient_id": (
-                patient_id
-                or "Не указан"
-            ),
-            "tasks": tasks,
-        })
+        # Ключ группировки — email.
+        # Если email отсутствует,
+        # используем ФИО врача.
+        email = doctor["email"].strip()
 
-        processed_rows += 1
-        total_tasks += len(tasks)
+        group_key = (
+            email.lower()
+            if email
+            else normalize_text(
+                doctor["fio"]
+            )
+        )
 
-    doctors_count = len(
-        doctor_tasks
+        if group_key not in grouped:
+
+            grouped[group_key] = {
+                "doctor_fio": doctor["fio"],
+                "email": email,
+                "tasks": [],
+                "rows": [],
+            }
+
+        grouped[group_key]["tasks"].extend(
+            tasks
+        )
+
+        grouped[group_key]["rows"].append(
+            row_number
+        )
+
+    # --------------------------------------------------------
+    # БЕЗОПАСНАЯ ДИАГНОСТИКА
+    # --------------------------------------------------------
+
+    print()
+    print("----- ДИАГНОСТИКА -----")
+
+    print(
+        "Пустых строк:",
+        stats["empty_rows"]
     )
 
     print(
+        "Строк с нераспознанной датой:",
+        stats["bad_date"]
+    )
+
+    print(
+        "Строк с другой датой:",
+        stats["other_date"]
+    )
+
+    print(
+        "Строк других филиалов:",
+        stats["other_branch"]
+    )
+
+    print(
+        "Уже обработано по M:",
+        stats["already_done"]
+    )
+
+    print(
+        "Без ФИО врача:",
+        stats["no_doctor"]
+    )
+
+    print(
+        "Врач не найден в базе:",
+        stats["doctor_not_found"]
+    )
+
+    print(
+        "Без заданий:",
+        stats["no_tasks"]
+    )
+
+    print(
+        "Подошло для обработки:",
+        stats["accepted"]
+    )
+
+    print()
+    print("Даты в полученных данных:")
+
+    for key in sorted(date_counter):
+        print(
+            f"  {key}: {date_counter[key]}"
+        )
+
+    print()
+    print("Филиалы в полученных данных:")
+
+    for key, count in sorted(
+        branch_counter.items(),
+        key=lambda x: (-x[1], x[0])
+    ):
+
+        # Чтобы лог не разрастался,
+        # показываем максимум 30 вариантов.
+        if count > 0:
+            print(
+                f"  {key}: {count}"
+            )
+
+    print()
+    print(
         "Новых врачей:",
-        doctors_count,
+        len(grouped)
     )
 
     print(
         "Строк с заданиями:",
-        processed_rows,
+        sum(
+            len(item["rows"])
+            for item in grouped.values()
+        )
     )
 
     print(
         "Всего заданий:",
-        total_tasks,
-    )
-
-    print(
-        "Других филиалов:",
-        skipped,
+        sum(
+            len(item["tasks"])
+            for item in grouped.values()
+        )
     )
 
     # --------------------------------------------------------
-    # Нет новых данных
+    # ЕСЛИ НОВЫХ ЗАДАНИЙ НЕТ
     # --------------------------------------------------------
 
-    if not doctor_tasks:
+    if not grouped:
 
+        print()
         print(
             "Новых заданий нет."
         )
@@ -777,273 +893,254 @@ def run_tasks_dispatch():
         return
 
     # --------------------------------------------------------
-    # TEST MODE
+    # SMTP
+    # --------------------------------------------------------
+
+    print()
+    print("Подключение к SMTP...")
+
+    smtp = smtplib.SMTP_SSL(
+        SMTP_HOST,
+        SMTP_PORT,
+        timeout=30,
+    )
+
+    smtp.login(
+        SMTP_USER,
+        SMTP_PASSWORD,
+    )
+
+    print("SMTP: OK")
+
+    # --------------------------------------------------------
+    # ТЕСТОВЫЙ РЕЖИМ
     # --------------------------------------------------------
 
     if TEST_MODE:
 
+        print()
         print(
-            "TEST_MODE: отправляем только себе."
+            "TEST_MODE=True:"
+            " письма врачам НЕ отправляются."
         )
 
-        smtp = smtp_connect()
+        test_tasks = []
 
-        try:
-
-            send_email(
-                smtp,
-                os.environ["SMTP_USER"],
-                (
-                    f"[ТЕСТ] BOTON v{VERSION} "
-                    f"— {today}"
-                ),
-                build_test_email(
-                    today,
-                    doctors_count,
-                    processed_rows,
-                    total_tasks,
-                ),
+        for item in grouped.values():
+            test_tasks.extend(
+                item["tasks"]
             )
 
-        finally:
+        # В тестовом режиме отправляем
+        # только сводное письмо себе.
+        send_email(
+            smtp,
+            SMTP_USER,
+            "Тест BoTon",
+            test_tasks,
+        )
 
-            smtp.quit()
+        smtp.quit()
 
         print(
-            "Тестовое письмо отправлено."
+            "Тестовое письмо отправлено на SMTP_USER."
         )
 
         print(
-            "M не изменялась."
+            "Таблица НЕ изменялась."
         )
 
         return
 
-    # ========================================================
+    # --------------------------------------------------------
     # РЕАЛЬНАЯ РАССЫЛКА
-    # ========================================================
+    # --------------------------------------------------------
 
-    doctors_map = (
-        get_doctors_contact_map(
-            client
-        )
-    )
+    updates = []
 
-    print(
-        "Врачей в базе:",
-        len(doctors_map),
-    )
+    sent_count = 0
+    error_count = 0
+    reserve_count = 0
 
-    smtp = smtp_connect()
+    for item in grouped.values():
 
-    status_updates = {}
+        doctor_fio = item["doctor_fio"]
+        email = item["email"]
+        tasks = item["tasks"]
+        rows = item["rows"]
 
-    sent = 0
-    reserve_sent = 0
-    failed = 0
+        # ----------------------------------------------------
+        # Если email врача отсутствует —
+        # сразу резервная почта.
+        # ----------------------------------------------------
 
-    try:
-
-        for doctor_name, patients in (
-            doctor_tasks.items()
-        ):
-
-            doctor_data = (
-                find_doctor_robust(
-                    doctor_name,
-                    doctors_map,
-                )
-            )
-
-            # ------------------------------------------------
-            # Основной адрес
-            # ------------------------------------------------
-
-            if (
-                doctor_data
-                and doctor_data.get("email")
-                and doctor_data["email"].strip()
-            ):
-
-                target_email = (
-                    doctor_data["email"].strip()
-                )
-
-                reserve = False
-
-            else:
-
-                target_email = DEFAULT_EMAIL
-                reserve = True
-
-            subject = (
-                f"[Филиал 2] Задания на "
-                f"{today} - {doctor_name}"
-            )
-
-            body = build_doctor_email(
-                doctor_name,
-                patients,
-                today,
-            )
-
-            # ------------------------------------------------
-            # Отправка
-            # ------------------------------------------------
+        if not email:
 
             try:
 
                 send_email(
                     smtp,
-                    target_email,
-                    subject,
-                    body,
+                    RESERVE_EMAIL,
+                    doctor_fio,
+                    tasks,
                 )
 
-                if reserve:
+                status = make_reserve_status()
 
-                    status = (
-                        make_reserve_status()
+                reserve_count += 1
+
+                print(
+                    "Отправлено на резервную почту."
+                )
+
+            except Exception as e:
+
+                status = make_error_status()
+
+                error_count += 1
+
+                print(
+                    "Ошибка отправки."
+                )
+                print(
+                    "Тип ошибки:",
+                    type(e).__name__
+                )
+
+        else:
+
+            try:
+
+                send_email(
+                    smtp,
+                    email,
+                    doctor_fio,
+                    tasks,
+                )
+
+                status = make_status(
+                    email
+                )
+
+                sent_count += 1
+
+                print(
+                    "Письмо врачу отправлено."
+                )
+
+            except Exception as e:
+
+                print(
+                    "Ошибка отправки врачу."
+                )
+                print(
+                    "Тип ошибки:",
+                    type(e).__name__
+                )
+
+                # --------------------------------------------
+                # РЕЗЕРВ
+                # --------------------------------------------
+
+                try:
+
+                    send_email(
+                        smtp,
+                        RESERVE_EMAIL,
+                        doctor_fio,
+                        tasks,
                     )
 
-                else:
+                    status = make_reserve_status()
 
-                    status = make_status(
-                        target_email
+                    reserve_count += 1
+
+                    print(
+                        "Отправлено на резервную почту."
                     )
 
-                sent += 1
+                except Exception as reserve_error:
 
-                if reserve:
-                    reserve_sent += 1
+                    status = make_error_status()
 
-            # ------------------------------------------------
-            # Основной адрес не сработал
-            # ------------------------------------------------
+                    error_count += 1
 
-            except Exception:
-
-                if not reserve:
-
-                    try:
-
-                        send_email(
-                            smtp,
-                            DEFAULT_EMAIL,
-                            subject,
-                            body,
-                        )
-
-                        status = (
-                            make_reserve_status()
-                        )
-
-                        sent += 1
-                        reserve_sent += 1
-
-                    except Exception:
-
-                        status = (
-                            make_error_status()
-                        )
-
-                        failed += 1
-
-                else:
-
-                    status = (
-                        make_error_status()
+                    print(
+                        "Ошибка резервной отправки."
                     )
-
-                    failed += 1
-
-            # ------------------------------------------------
-            # Статус каждой строки
-            # ------------------------------------------------
-
-            for patient in patients:
-
-                status_updates[
-                    patient["row_idx"]
-                ] = status
+                    print(
+                        "Тип ошибки:",
+                        type(reserve_error).__name__
+                    )
 
         # ----------------------------------------------------
-        # Одна batch-запись в M
+        # Обновляем M
         # ----------------------------------------------------
 
-        write_statuses(
-            tasks_sheet,
-            status_updates,
+        for row_number in rows:
+
+            updates.append({
+                "range": f"M{row_number}",
+                "values": [[status]],
+            })
+
+    smtp.quit()
+
+    # --------------------------------------------------------
+    # BATCH UPDATE
+    # --------------------------------------------------------
+
+    if updates:
+
+        tasks_sheet.batch_update(
+            updates,
+            value_input_option="USER_ENTERED",
         )
 
-    finally:
-
-        smtp.quit()
-
-    elapsed = (
-        datetime.now(
-            MOSCOW_TZ
-        )
-        - started
-    ).total_seconds()
-
-    # ========================================================
+    # --------------------------------------------------------
     # ИТОГ
-    # ========================================================
+    # --------------------------------------------------------
+
+    print()
+    print("=" * 60)
+    print("ИТОГ")
+    print("=" * 60)
 
     print(
-        "=" * 60
+        "Врачей обработано:",
+        len(grouped)
     )
 
     print(
-        "ИТОГ"
+        "Успешно отправлено врачам:",
+        sent_count
     )
 
     print(
-        "=" * 60
-    )
-
-    print(
-        "Врачей:",
-        doctors_count,
-    )
-
-    print(
-        "Успешно отправлено:",
-        sent,
-    )
-
-    print(
-        "Через резерв:",
-        reserve_sent,
+        "Отправлено на резерв:",
+        reserve_count
     )
 
     print(
         "Ошибок:",
-        failed,
+        error_count
     )
 
     print(
-        "Строк обработано:",
-        processed_rows,
+        "Строк записано в M:",
+        len(updates)
     )
 
     print(
-        "Заданий:",
-        total_tasks,
+        "Всего заданий:",
+        sum(
+            len(item["tasks"])
+            for item in grouped.values()
+        )
     )
 
     print(
-        "Статусов записано в M:",
-        len(status_updates),
-    )
-
-    print(
-        f"Время: {elapsed:.1f} сек."
-    )
-
-    print(
-        f"BOTON v{VERSION}: завершено."
+        "BOTON завершён."
     )
 
 
@@ -1052,4 +1149,4 @@ def run_tasks_dispatch():
 # ============================================================
 
 if __name__ == "__main__":
-    run_tasks_dispatch()
+    main()
