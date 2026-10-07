@@ -20,7 +20,7 @@ VERSION = "1.1"
 
 # True  = тест: письмо только себе, таблица не изменяется
 # False = реальная рассылка врачам + запись результата в M
-TEST_MODE = True
+TEST_MODE = False
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
