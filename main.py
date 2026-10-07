@@ -1,9 +1,11 @@
 # ============================================================
-# BoTon v2.1
+# BoTon v2.2
 # Рассылка заданий + приём ответов врачей + запись H/J/L
-# + отчёт заведующему
+# + точная привязка ответа к отправленному заданию
+# + защищённый IMAP без STORE/UNSEEN
+# + журнал BoTon_Log
 #
-# VERSION: 2.1
+# VERSION: 2.2
 # ============================================================
 
 import os
@@ -12,9 +14,10 @@ import ssl
 import imaplib
 import smtplib
 import json
+import secrets
 
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from email import policy
 from email.header import decode_header
 from email.message import EmailMessage
@@ -30,7 +33,7 @@ from google.oauth2.service_account import Credentials
 # КОНФИГУРАЦИЯ
 # ============================================================
 
-VERSION = "2.1"
+VERSION = "2.2"
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
@@ -49,6 +52,9 @@ DOCTORS_SPREADSHEET_ID = (
 )
 
 DOCTORS_SHEET_NAME = "Врачи"
+
+# Журнал отправлений и входящих ответов
+LOG_SHEET_NAME = "BoTon_Log"
 
 
 # ------------------------------------------------------------
@@ -146,8 +152,17 @@ IMAP_PASSWORD = os.environ.get(
     SMTP_PASSWORD
 )
 
-# Жёсткий timeout IMAP.
+# Timeout IMAP
 IMAP_TIMEOUT = 20
+
+# Искать ответы только за последние N дней
+IMAP_LOOKBACK_DAYS = 3
+
+# Максимум писем от одного врача за один запуск
+IMAP_MAX_PER_DOCTOR = 20
+
+# Максимум всех писем за один запуск
+IMAP_MAX_TOTAL = 100
 
 
 # ------------------------------------------------------------
@@ -263,11 +278,13 @@ def parse_date(value):
     ]
 
     for fmt in formats:
+
         try:
             return datetime.strptime(
                 value,
                 fmt
             ).date()
+
         except ValueError:
             pass
 
@@ -279,6 +296,7 @@ def parse_date(value):
 # ============================================================
 
 def get_signature(name):
+
     name = normalize_text(name)
 
     if not name:
@@ -289,7 +307,6 @@ def get_signature(name):
     if not parts:
         return ""
 
-    # Например:
     # О.В. Нецветаева
     if (
         len(parts) >= 2
@@ -298,6 +315,7 @@ def get_signature(name):
             parts[0]
         )
     ):
+
         surname = parts[1]
 
         initials = re.sub(
@@ -313,6 +331,7 @@ def get_signature(name):
     initials = ""
 
     for part in parts[1:]:
+
         letters = re.sub(
             r"[^а-я]",
             "",
@@ -326,18 +345,30 @@ def get_signature(name):
 
 
 def surname_of_signature(signature):
-    return signature.split()[0] if signature else ""
+
+    return (
+        signature.split()[0]
+        if signature
+        else ""
+    )
 
 
 def initials_of_signature(signature):
+
     parts = signature.split()
 
-    return parts[1] if len(parts) > 1 else ""
+    return (
+        parts[1]
+        if len(parts) > 1
+        else ""
+    )
 
 
 def find_doctor(contact_name, doctors_map):
 
-    signature = get_signature(contact_name)
+    signature = get_signature(
+        contact_name
+    )
 
     if not signature:
         return None
@@ -345,14 +376,23 @@ def find_doctor(contact_name, doctors_map):
     if signature in doctors_map:
         return doctors_map[signature]
 
-    surname = surname_of_signature(signature)
-    initials = initials_of_signature(signature)
+    surname = surname_of_signature(
+        signature
+    )
 
-    # Фамилия + совместимые инициалы
+    initials = initials_of_signature(
+        signature
+    )
+
     for key, doctor in doctors_map.items():
 
-        db_surname = surname_of_signature(key)
-        db_initials = initials_of_signature(key)
+        db_surname = surname_of_signature(
+            key
+        )
+
+        db_initials = initials_of_signature(
+            key
+        )
 
         if db_surname != surname:
             continue
@@ -366,12 +406,13 @@ def find_doctor(contact_name, doctors_map):
         ):
             return doctor
 
-    # Частичное совпадение фамилии
     if len(surname) >= 4:
 
         for key, doctor in doctors_map.items():
 
-            db_surname = surname_of_signature(key)
+            db_surname = surname_of_signature(
+                key
+            )
 
             if (
                 surname in db_surname
@@ -389,6 +430,7 @@ def find_doctor(contact_name, doctors_map):
 def get_google_client():
 
     if not GOOGLE_SERVICE_ACCOUNT:
+
         raise RuntimeError(
             "Не задан GOOGLE_SERVICE_ACCOUNT"
         )
@@ -409,7 +451,54 @@ def get_google_client():
         )
     )
 
-    return gspread.authorize(credentials)
+    return gspread.authorize(
+        credentials
+    )
+
+
+def ensure_log_sheet(tasks_ss):
+
+    try:
+
+        log_sheet = tasks_ss.worksheet(
+            LOG_SHEET_NAME
+        )
+
+        print(
+            f"Google Sheets: лист "
+            f"{LOG_SHEET_NAME} найден"
+        )
+
+    except Exception:
+
+        print(
+            f"Google Sheets: создаю лист "
+            f"{LOG_SHEET_NAME}"
+        )
+
+        log_sheet = tasks_ss.add_worksheet(
+            title=LOG_SHEET_NAME,
+            rows=2000,
+            cols=10
+        )
+
+        log_sheet.append_row(
+            [
+                "Timestamp",
+                "Event",
+                "BOTON-ID",
+                "Дата",
+                "Врач",
+                "Email",
+                "Mapping JSON",
+                "Message-ID",
+                "Result",
+                "Notes",
+            ],
+            value_input_option="USER_ENTERED"
+        )
+
+    return log_sheet
 
 
 def get_sheets():
@@ -432,7 +521,16 @@ def get_sheets():
         DOCTORS_SHEET_NAME
     )
 
-    return tasks_sheet, doctors_sheet
+    log_sheet = ensure_log_sheet(
+        tasks_ss
+    )
+
+    return (
+        tasks_ss,
+        tasks_sheet,
+        doctors_sheet,
+        log_sheet,
+    )
 
 
 # ============================================================
@@ -471,7 +569,9 @@ def get_doctors_map(doctors_sheet):
         if not name:
             continue
 
-        signature = get_signature(name)
+        signature = get_signature(
+            name
+        )
 
         if not signature:
             continue
@@ -517,15 +617,6 @@ def make_send_status(email):
     )
 
 
-def make_reserve_status():
-
-    return (
-        f"✅ Отправлено "
-        f"{now_moscow().strftime('%d.%m.%Y %H:%M')} "
-        f"на резервную почту"
-    )
-
-
 def make_error_status():
 
     return (
@@ -534,7 +625,10 @@ def make_error_status():
     )
 
 
-def get_tasks_from_row(row, row_number):
+def get_tasks_from_row(
+    row,
+    row_number
+):
 
     result = []
 
@@ -580,7 +674,10 @@ def patient_key(row):
         else ""
     )
 
-    return oms or normalize_text(patient)
+    return (
+        oms
+        or normalize_text(patient)
+    )
 
 
 def group_assignment_rows(items):
@@ -615,7 +712,9 @@ def group_assignment_rows(items):
             item["tasks"]
         )
 
-    return list(patients.values())
+    return list(
+        patients.values()
+    )
 
 
 # ============================================================
@@ -656,7 +755,9 @@ def task_label(
 # ПРИВЕТСТВИЕ
 # ============================================================
 
-def extract_first_name_patronymic(full_name):
+def extract_first_name_patronymic(
+    full_name
+):
 
     name = clean(full_name)
 
@@ -700,7 +801,7 @@ def make_doctor_key(doctor):
         r"[^a-zа-я0-9]+",
         "-",
         signature
-    )
+    ).strip("-")
 
 
 def make_bot_id(
@@ -708,25 +809,37 @@ def make_bot_id(
     doctor
 ):
 
+    # Уникальный ID каждого конкретного отправления.
+    token = secrets.token_hex(
+        2
+    ).upper()
+
     return (
         f"BOTON-"
         f"{target_date.strftime('%Y%m%d')}-"
-        f"{make_doctor_key(doctor)}"
+        f"{make_doctor_key(doctor)}-"
+        f"{token}"
     )
 
 
-def extract_bot_id(text):
+def extract_bot_ids(text):
 
-    match = re.search(
+    return re.findall(
         r"\[BOTON-ID:([^\]]+)\]",
         text,
         flags=re.IGNORECASE
     )
 
-    if match:
-        return match.group(1).strip()
 
-    return ""
+def extract_bot_id(text):
+
+    ids = extract_bot_ids(text)
+
+    return (
+        ids[0].strip()
+        if ids
+        else ""
+    )
 
 
 # ============================================================
@@ -772,6 +885,7 @@ def build_email_body(
         )
 
         if patient["oms"]:
+
             lines.append(
                 f"ID/ОМС: {patient['oms']}"
             )
@@ -780,7 +894,9 @@ def build_email_body(
 
         multiple = len(tasks) > 1
 
-        for task_index, task in enumerate(tasks):
+        for task_index, task in enumerate(
+            tasks
+        ):
 
             label = task_label(
                 patient_number,
@@ -835,7 +951,9 @@ def build_email_body(
 
     lines.append("")
 
-    lines.append("Примеры ответа:")
+    lines.append(
+        "Примеры ответа:"
+    )
 
     lines.append(
         "Выполнено: 1, 2, 3"
@@ -870,7 +988,9 @@ def build_email_body(
 
     lines.append("")
 
-    lines.append("С уважением,")
+    lines.append(
+        "С уважением,"
+    )
 
     lines.append(
         "BoTon и Агаввердиев Э.М."
@@ -911,14 +1031,18 @@ def smtp_connect():
         timeout=30,
     )
 
-    print("SMTP: SSL OK")
+    print(
+        "SMTP: SSL OK"
+    )
 
     server.login(
         SMTP_USER,
         SMTP_PASSWORD,
     )
 
-    print("SMTP: авторизация OK")
+    print(
+        "SMTP: авторизация OK"
+    )
 
     return server
 
@@ -962,6 +1086,7 @@ def decode_mime_header(value):
         if isinstance(part, bytes):
 
             try:
+
                 result.append(
                     part.decode(
                         encoding or "utf-8",
@@ -1013,6 +1138,7 @@ def get_email_body(message):
             ):
 
                 try:
+
                     text = part.get_content()
 
                 except Exception:
@@ -1037,6 +1163,7 @@ def get_email_body(message):
                 plain_parts.append(text)
 
         if plain_parts:
+
             return "\n".join(
                 plain_parts
             )
@@ -1067,11 +1194,6 @@ def connect_imap():
         f"{IMAP_HOST}:{IMAP_PORT}..."
     )
 
-    # --------------------------------------------------------
-    # Ключевое исправление v2.1:
-    # timeout=20 предотвращает бесконечное зависание.
-    # --------------------------------------------------------
-
     mail = imaplib.IMAP4_SSL(
         IMAP_HOST,
         IMAP_PORT,
@@ -1082,10 +1204,10 @@ def connect_imap():
         "IMAP: SSL-соединение установлено"
     )
 
-    # Дополнительный timeout сокета.
     try:
 
         if getattr(mail, "sock", None):
+
             mail.sock.settimeout(
                 IMAP_TIMEOUT
             )
@@ -1093,8 +1215,8 @@ def connect_imap():
     except Exception as error:
 
         print(
-            f"IMAP: не удалось установить "
-            f"timeout сокета: {error}"
+            f"IMAP: timeout сокета "
+            f"не установлен: {error}"
         )
 
     print(
@@ -1115,6 +1237,9 @@ def connect_imap():
         "IMAP: открытие INBOX..."
     )
 
+    # ВАЖНО:
+    # readonly=True.
+    # Никакого STORE в v2.2 нет вообще.
     status, data = mail.select(
         "INBOX",
         readonly=True
@@ -1128,10 +1253,246 @@ def connect_imap():
         )
 
     print(
-        "IMAP: INBOX открыт"
+        "IMAP: INBOX открыт в режиме readonly"
     )
 
     return mail
+
+
+# ============================================================
+# ЖУРНАЛ BoTon_Log
+# ============================================================
+
+LOG_HEADERS = [
+    "Timestamp",
+    "Event",
+    "BOTON-ID",
+    "Дата",
+    "Врач",
+    "Email",
+    "Mapping JSON",
+    "Message-ID",
+    "Result",
+    "Notes",
+]
+
+
+def get_log_rows(log_sheet):
+
+    try:
+
+        rows = log_sheet.get_all_values()
+
+    except Exception as error:
+
+        print(
+            f"BoTon_Log: ошибка чтения: {error}"
+        )
+
+        return []
+
+    if not rows:
+        return []
+
+    return rows
+
+
+def append_log(
+    log_sheet,
+    event,
+    bot_id,
+    target_date,
+    doctor_name="",
+    email="",
+    mapping=None,
+    message_id="",
+    result="",
+    notes="",
+):
+
+    mapping_json = ""
+
+    if mapping is not None:
+
+        mapping_json = json.dumps(
+            mapping,
+            ensure_ascii=False,
+            separators=(",", ":")
+        )
+
+    log_sheet.append_row(
+        [
+            now_moscow().strftime(
+                "%d.%m.%Y %H:%M:%S"
+            ),
+            event,
+            bot_id,
+            (
+                target_date.strftime("%d.%m.%Y")
+                if target_date
+                else ""
+            ),
+            doctor_name,
+            email,
+            mapping_json,
+            message_id,
+            result,
+            notes,
+        ],
+        value_input_option="USER_ENTERED"
+    )
+
+
+def find_send_log(
+    log_rows,
+    bot_id,
+):
+
+    # Ищем последнее SEND с таким BOTON-ID.
+    for row_number in range(
+        len(log_rows) - 1,
+        0,
+        -1
+    ):
+
+        row = log_rows[row_number]
+
+        if len(row) < 10:
+            continue
+
+        event = clean(row[1])
+        current_bot_id = clean(row[2])
+
+        if (
+            event == "SEND"
+            and current_bot_id == bot_id
+        ):
+
+            mapping_json = clean(
+                row[6]
+            )
+
+            try:
+
+                mapping = json.loads(
+                    mapping_json
+                )
+
+            except Exception:
+
+                mapping = {}
+
+            target_date = parse_date(
+                row[3]
+            )
+
+            return {
+                "row_number": row_number + 1,
+                "bot_id": bot_id,
+                "target_date": target_date,
+                "doctor_name": clean(row[4]),
+                "email": clean(row[5]).lower(),
+                "mapping": mapping,
+                "result": clean(row[8]),
+            }
+
+    return None
+
+
+def message_was_processed(
+    log_rows,
+    message_id,
+):
+
+    if not message_id:
+        return False
+
+    for row in log_rows[1:]:
+
+        if len(row) < 8:
+            continue
+
+        if (
+            clean(row[1]) == "RECEIVE"
+            and clean(row[7]) == message_id
+        ):
+            return True
+
+    return False
+
+
+def update_log_result(
+    log_sheet,
+    log_row_number,
+    result,
+):
+
+    try:
+
+        log_sheet.update_cell(
+            log_row_number,
+            9,
+            result
+        )
+
+    except Exception as error:
+
+        print(
+            f"BoTon_Log: ошибка обновления "
+            f"строки {log_row_number}: "
+            f"{error}"
+        )
+
+
+# ============================================================
+# КАРТА ТОЧНЫХ ЗАДАНИЙ
+# ============================================================
+
+def build_exact_response_task_map(
+    patients
+):
+
+    mapping = defaultdict(list)
+
+    for patient_number, patient in enumerate(
+        patients,
+        start=1
+    ):
+
+        tasks = patient["tasks"]
+
+        for task_index, task in enumerate(
+            tasks
+        ):
+
+            if len(tasks) == 1:
+
+                key = f"{patient_number}"
+
+            else:
+
+                key = (
+                    f"{patient_number}"
+                    f"{TASK_LETTERS[task_index]}"
+                )
+
+            mapping[key].append({
+                "row_number": task["row_number"],
+                "status_col": task["status_col"],
+                "task_col": task["task_col"],
+                "title": task["title"],
+            })
+
+    return dict(mapping)
+
+
+def build_mapping_for_log(
+    patients
+):
+
+    return build_exact_response_task_map(
+        patients
+    )
 
 
 # ============================================================
@@ -1141,6 +1502,71 @@ def connect_imap():
 STATUS_DONE = "done"
 STATUS_PARTIAL = "partial"
 STATUS_NOT_DONE = "not_done"
+
+
+def extract_reply_text(text):
+
+    """
+    Убирает процитированное исходное письмо.
+
+    Это важно:
+    в исходном письме есть примеры
+    'Выполнено: 1, 2, 3'.
+    Их нельзя принимать за ответ врача.
+    """
+
+    text = text.replace(
+        "\r\n",
+        "\n"
+    ).replace(
+        "\r",
+        "\n"
+    )
+
+    lines = []
+
+    quote_markers = [
+        "-----original message-----",
+        "original message",
+        "исходное сообщение",
+        "начало цитируемого сообщения",
+        "begin forwarded message",
+    ]
+
+    for line in text.split("\n"):
+
+        stripped = line.strip()
+
+        lower = stripped.lower()
+
+        if any(
+            marker in lower
+            for marker in quote_markers
+        ):
+            break
+
+        if stripped.startswith(">"):
+            continue
+
+        # Outlook / Gmail:
+        # On ... wrote:
+        if re.match(
+            r"^on .+ wrote:\s*$",
+            stripped,
+            flags=re.IGNORECASE
+        ):
+            break
+
+        if re.match(
+            r"^в .+ написал(?:а|о)?:\s*$",
+            stripped,
+            flags=re.IGNORECASE
+        ):
+            break
+
+        lines.append(line)
+
+    return "\n".join(lines).strip()
 
 
 def normalize_answer_text(text):
@@ -1159,7 +1585,49 @@ def normalize_answer_text(text):
     return text
 
 
+def extract_task_tokens(text):
+
+    """
+    Извлекает:
+    1
+    2А
+    2Б
+    15В
+    """
+
+    tokens = re.findall(
+        r"\b(\d+)\s*([А-ЯЁа-яё]?)\b",
+        text
+    )
+
+    result = []
+
+    for number, letter in tokens:
+
+        try:
+            number = int(number)
+
+        except ValueError:
+            continue
+
+        letter = (
+            letter.upper()
+            if letter
+            else ""
+        )
+
+        result.append(
+            (number, letter)
+        )
+
+    return result
+
+
 def parse_status_sections(text):
+
+    text = extract_reply_text(
+        text
+    )
 
     text = normalize_answer_text(
         text
@@ -1171,160 +1639,159 @@ def parse_status_sections(text):
         STATUS_NOT_DONE: [],
     }
 
-    patterns = {
+    # --------------------------------------------------------
+    # Формат:
+    # Выполнено: 1, 2А
+    # Не выполнено: 3Б
+    # Частично: 4
+    # --------------------------------------------------------
 
-        STATUS_DONE: [
-            r"выполнено\s*[:\-]?\s*([^\n]+)",
-            r"выполнены\s*[:\-]?\s*([^\n]+)",
-        ],
+    line_patterns = [
+        (
+            STATUS_NOT_DONE,
+            r"^\s*не\s+выполнен(?:о|ы)"
+            r"\s*[:\-]?\s*(.+?)\s*$",
+        ),
+        (
+            STATUS_PARTIAL,
+            r"^\s*частично"
+            r"\s*[:\-]?\s*(.+?)\s*$",
+        ),
+        (
+            STATUS_DONE,
+            r"^\s*выполнен(?:о|ы)"
+            r"\s*[:\-]?\s*(.+?)\s*$",
+        ),
+    ]
 
-        STATUS_PARTIAL: [
-            r"частично\s*[:\-]?\s*([^\n]+)",
-        ],
+    for line in text.split("\n"):
 
-        STATUS_NOT_DONE: [
-            r"не\s+выполнено\s*[:\-]?\s*([^\n]+)",
-            r"не\s+выполнены\s*[:\-]?\s*([^\n]+)",
-        ],
-    }
+        line = line.strip()
 
-    for status, status_patterns in patterns.items():
+        if not line:
+            continue
 
-        for pattern in status_patterns:
+        for status, pattern in line_patterns:
 
-            matches = re.findall(
+            match = re.match(
                 pattern,
-                text,
+                line,
                 flags=re.IGNORECASE
             )
 
-            for match in matches:
+            if match:
 
-                tokens = re.findall(
-                    r"\b(\d+)\s*([А-ЯЁа-яё]?)\b",
-                    match
+                tokens = extract_task_tokens(
+                    match.group(1)
                 )
 
-                for number, letter in tokens:
+                sections[status].extend(
+                    tokens
+                )
 
-                    number = int(number)
+                break
 
-                    letter = (
-                        letter.upper()
-                        if letter
-                        else ""
-                    )
+        # ----------------------------------------------------
+        # Формат:
+        # 2А — выполнено
+        # 3Б — частично
+        # 4 — не выполнено
+        # ----------------------------------------------------
 
-                    sections[status].append(
-                        (number, letter)
-                    )
+        item_first = re.match(
+            r"^\s*(.+?)\s*"
+            r"(?:—|–|-|:)\s*"
+            r"(не\s+выполнено|"
+            r"частично|"
+            r"выполнено)"
+            r"\s*$",
+            line,
+            flags=re.IGNORECASE
+        )
+
+        if item_first:
+
+            item_text = item_first.group(1)
+            status_text = (
+                item_first.group(2)
+                .lower()
+            )
+
+            tokens = extract_task_tokens(
+                item_text
+            )
+
+            if "не выполнено" in status_text:
+
+                status = STATUS_NOT_DONE
+
+            elif "частично" in status_text:
+
+                status = STATUS_PARTIAL
+
+            else:
+
+                status = STATUS_DONE
+
+            sections[status].extend(
+                tokens
+            )
 
     return sections
 
 
 # ============================================================
-# КАРТА ЗАДАНИЙ
+# ПРЕОБРАЗОВАНИЕ СТАТУСОВ В КЛЮЧИ
 # ============================================================
-
-def build_response_task_map(patients):
-
-    mapping = {}
-
-    for patient_number, patient in enumerate(
-        patients,
-        start=1
-    ):
-
-        tasks = patient["tasks"]
-
-        for task_index, task in enumerate(tasks):
-
-            if len(tasks) == 1:
-
-                key = (
-                    patient_number,
-                    ""
-                )
-
-            else:
-
-                key = (
-                    patient_number,
-                    TASK_LETTERS[task_index]
-                )
-
-            mapping[key] = task
-
-    return mapping
-
 
 def expand_status_items(
     items,
-    patients,
-    mapping,
+    mapping
 ):
 
     result = set()
 
     for patient_number, letter in items:
 
-        if (
-            patient_number < 1
-            or patient_number > len(patients)
-        ):
-            continue
-
-        # Номер без буквы =
-        # все задания пациента.
+        # Номер без буквы:
+        # найти все задания пациента.
         if not letter:
 
-            patient = patients[
-                patient_number - 1
-            ]
+            prefix = f"{patient_number}"
 
-            for task_index, task in enumerate(
-                patient["tasks"]
-            ):
+            for key in mapping:
 
-                if len(patient["tasks"]) == 1:
-
-                    key = (
-                        patient_number,
-                        ""
+                if (
+                    key == prefix
+                    or (
+                        key.startswith(prefix)
+                        and key[len(prefix):]
                     )
+                ):
 
-                else:
-
-                    key = (
-                        patient_number,
-                        TASK_LETTERS[
-                            task_index
-                        ]
-                    )
-
-                if key in mapping:
                     result.add(key)
 
         else:
 
             key = (
-                patient_number,
-                letter
+                f"{patient_number}"
+                f"{letter}"
             )
 
             if key in mapping:
+
                 result.add(key)
 
     return result
 
 
 # ============================================================
-# ПРИМЕНЕНИЕ ОТВЕТА
+# ПРИМЕНЕНИЕ ОТВЕТА ПО ТОЧНОЙ КАРТЕ
 # ============================================================
 
 def apply_doctor_response(
     worksheet,
-    patients,
+    mapping,
     answer_text,
 ):
 
@@ -1332,26 +1799,19 @@ def apply_doctor_response(
         answer_text
     )
 
-    mapping = build_response_task_map(
-        patients
-    )
-
     done = expand_status_items(
         sections[STATUS_DONE],
-        patients,
-        mapping,
+        mapping
     )
 
     partial = expand_status_items(
         sections[STATUS_PARTIAL],
-        patients,
-        mapping,
+        mapping
     )
 
     not_done = expand_status_items(
         sections[STATUS_NOT_DONE],
-        patients,
-        mapping,
+        mapping
     )
 
     # Приоритет:
@@ -1361,11 +1821,11 @@ def apply_doctor_response(
     done -= not_done
     done -= partial
 
-    updates = []
-
     timestamp = now_moscow().strftime(
         "%d.%m.%Y %H:%M"
     )
+
+    updates = []
 
     statistics = {
         "done": 0,
@@ -1376,11 +1836,13 @@ def apply_doctor_response(
     def status_text(status):
 
         if status == STATUS_DONE:
+
             return (
                 f"✅ Выполнено {timestamp}"
             )
 
         if status == STATUS_PARTIAL:
+
             return (
                 f"⚠️ Частично {timestamp}"
             )
@@ -1389,7 +1851,11 @@ def apply_doctor_response(
             f"❌ Не выполнено {timestamp}"
         )
 
-    for key, task in mapping.items():
+    # --------------------------------------------------------
+    # Каждая запись mapping может содержать несколько строк.
+    # --------------------------------------------------------
+
+    for key, task_refs in mapping.items():
 
         if key in done:
 
@@ -1407,24 +1873,26 @@ def apply_doctor_response(
 
             continue
 
-        row_number = task["row_number"]
-        status_col = task["status_col"]
+        for task in task_refs:
 
-        cell = (
-            gspread.utils.rowcol_to_a1(
-                row_number,
-                status_col + 1
+            row_number = task["row_number"]
+            status_col = task["status_col"]
+
+            cell = (
+                gspread.utils.rowcol_to_a1(
+                    row_number,
+                    status_col + 1
+                )
             )
-        )
 
-        updates.append({
-            "range": cell,
-            "values": [
-                [status_text(status)]
-            ],
-        })
+            updates.append({
+                "range": cell,
+                "values": [
+                    [status_text(status)]
+                ],
+            })
 
-        statistics[status] += 1
+            statistics[status] += 1
 
     if updates and not TEST_MODE:
 
@@ -1545,6 +2013,7 @@ def get_patients_for_doctor(
 
 def send_today_assignments(
     worksheet,
+    log_sheet,
     doctors_map,
     rows,
     target_date,
@@ -1662,9 +2131,21 @@ def send_today_assignments(
             if not patients:
                 continue
 
+            # ------------------------------------------------
+            # Уникальный BOTON-ID
+            # ------------------------------------------------
+
             bot_id = make_bot_id(
                 target_date,
                 doctor
+            )
+
+            # ------------------------------------------------
+            # ТОЧНАЯ КАРТА
+            # ------------------------------------------------
+
+            mapping = build_mapping_for_log(
+                patients
             )
 
             subject = (
@@ -1699,13 +2180,81 @@ def send_today_assignments(
                 )
 
                 print("")
+
                 print(body)
+
+                print(
+                    "\nТочная карта:"
+                )
+
+                print(
+                    json.dumps(
+                        mapping,
+                        ensure_ascii=False,
+                        indent=2
+                    )
+                )
 
                 print(
                     "======================"
                 )
 
                 continue
+
+            # ------------------------------------------------
+            # Сначала создаём запись PENDING.
+            #
+            # Это гарантирует, что карта задания существует
+            # ещё до фактической отправки письма.
+            # ------------------------------------------------
+
+            try:
+
+                append_log(
+                    log_sheet,
+                    event="SEND",
+                    bot_id=bot_id,
+                    target_date=target_date,
+                    doctor_name=doctor["name"],
+                    email=email,
+                    mapping=mapping,
+                    result="PENDING",
+                    notes="Карта создана до отправки",
+                )
+
+                log_rows = get_log_rows(
+                    log_sheet
+                )
+
+                send_log = find_send_log(
+                    log_rows,
+                    bot_id
+                )
+
+                if not send_log:
+
+                    raise RuntimeError(
+                        "Не удалось найти созданную "
+                        "запись SEND в BoTon_Log"
+                    )
+
+                send_log_row = send_log[
+                    "row_number"
+                ]
+
+            except Exception as error:
+
+                print(
+                    f"BoTon_Log: не удалось создать "
+                    f"карту для {doctor['name']}: "
+                    f"{error}"
+                )
+
+                continue
+
+            # ------------------------------------------------
+            # Отправка
+            # ------------------------------------------------
 
             try:
 
@@ -1716,11 +2265,11 @@ def send_today_assignments(
                     body,
                 )
 
-                updates = []
-
                 status = make_send_status(
                     email
                 )
+
+                updates = []
 
                 for item in items:
 
@@ -1744,10 +2293,25 @@ def send_today_assignments(
                         value_input_option="USER_ENTERED"
                     )
 
+                update_log_result(
+                    log_sheet,
+                    send_log_row,
+                    "SENT"
+                )
+
                 print(
                     f"Письмо врачу отправлено: "
                     f"{doctor['name']} "
                     f"({email})"
+                )
+
+                print(
+                    f"BOTON-ID: {bot_id}"
+                )
+
+                print(
+                    f"Точная карта: "
+                    f"{len(mapping)} пунктов"
                 )
 
             except Exception as error:
@@ -1756,6 +2320,12 @@ def send_today_assignments(
                     f"Ошибка отправки "
                     f"{doctor['name']}: "
                     f"{error}"
+                )
+
+                update_log_result(
+                    log_sheet,
+                    send_log_row,
+                    "SEND_ERROR"
                 )
 
                 if not TEST_MODE:
@@ -1792,8 +2362,200 @@ def send_today_assignments(
 
             try:
                 smtp.quit()
+
             except Exception:
                 pass
+
+
+# ============================================================
+# ПОИСК BOTON-ID В ПИСЬМЕ
+# ============================================================
+
+def find_matching_bot_id(
+    combined_text,
+    log_rows,
+    sender,
+):
+
+    bot_ids = extract_bot_ids(
+        combined_text
+    )
+
+    if not bot_ids:
+        return "", None
+
+    # Сначала ищем точное соответствие в журнале.
+    for raw_id in bot_ids:
+
+        bot_id = raw_id.strip()
+
+        send_log = find_send_log(
+            log_rows,
+            bot_id
+        )
+
+        if not send_log:
+            continue
+
+        if (
+            send_log["email"]
+            and send_log["email"] != sender
+        ):
+            continue
+
+        return bot_id, send_log
+
+    # Если есть ID, но карты нет.
+    # Возвращаем первый ID для диагностического сообщения.
+    return bot_ids[0].strip(), None
+
+
+# ============================================================
+# LEGACY v2.1
+# ============================================================
+
+def get_legacy_doctor_by_bot_id(
+    bot_id,
+    doctors_map
+):
+
+    match = re.match(
+        r"^BOTON-(\d{8})-(.+)$",
+        bot_id,
+        flags=re.IGNORECASE
+    )
+
+    if not match:
+        return None, None
+
+    date_text = match.group(1)
+    doctor_key = match.group(2).lower()
+
+    try:
+
+        target_date = datetime.strptime(
+            date_text,
+            "%Y%m%d"
+        ).date()
+
+    except ValueError:
+
+        return None, None
+
+    for doctor in doctors_map.values():
+
+        key = make_doctor_key(
+            doctor
+        ).lower()
+
+        if key == doctor_key:
+
+            return doctor, target_date
+
+    return None, target_date
+
+
+# ============================================================
+# ПОЛУЧЕНИЕ ПИСЕМ ОТ ВРАЧЕЙ
+# ============================================================
+
+def search_doctor_messages(
+    mail,
+    doctors_map,
+):
+
+    since_date = (
+        today_moscow()
+        - timedelta(
+            days=IMAP_LOOKBACK_DAYS
+        )
+    )
+
+    since_imap = since_date.strftime(
+        "%d-%b-%Y"
+    )
+
+    print(
+        f"IMAP: ищем письма врачей "
+        f"с {since_date.strftime('%d.%m.%Y')}"
+    )
+
+    found = []
+    seen_uids = set()
+
+    doctor_emails = sorted({
+        clean(
+            doctor.get("email")
+        ).lower()
+        for doctor in doctors_map.values()
+        if clean(
+            doctor.get("email")
+        )
+    })
+
+    for email in doctor_emails:
+
+        if len(found) >= IMAP_MAX_TOTAL:
+            break
+
+        try:
+
+            status, data = mail.search(
+                None,
+                "FROM",
+                email,
+                "SINCE",
+                since_imap
+            )
+
+        except (
+            imaplib.IMAP4.abort,
+            EOFError,
+            OSError,
+        ) as error:
+
+            print(
+                f"IMAP: ошибка поиска "
+                f"от {email}: {error}"
+            )
+
+            raise
+
+        if status != "OK":
+            continue
+
+        ids = (
+            data[0].split()
+            if data and data[0]
+            else []
+        )
+
+        # Берём самые новые.
+        ids = ids[
+            -IMAP_MAX_PER_DOCTOR:
+        ]
+
+        for uid in ids:
+
+            uid_text = uid.decode(
+                errors="replace"
+            )
+
+            if uid_text in seen_uids:
+                continue
+
+            seen_uids.add(uid_text)
+
+            found.append({
+                "uid": uid,
+                "uid_text": uid_text,
+                "sender_hint": email,
+            })
+
+            if len(found) >= IMAP_MAX_TOTAL:
+                break
+
+    return found
 
 
 # ============================================================
@@ -1802,6 +2564,7 @@ def send_today_assignments(
 
 def process_incoming_answers(
     worksheet,
+    log_sheet,
     rows,
     doctors_map,
 ):
@@ -1832,72 +2595,59 @@ def process_incoming_answers(
 
     try:
 
+        # ----------------------------------------------------
+        # Читаем журнал ОДИН раз.
+        # ----------------------------------------------------
+
+        log_rows = get_log_rows(
+            log_sheet
+        )
+
+        # ----------------------------------------------------
+        # Ищем только письма врачей.
+        # ----------------------------------------------------
+
         print(
-            "IMAP: поиск непрочитанных писем..."
+            "IMAP: поиск писем только от врачей..."
         )
 
-        status, data = mail.search(
-            None,
-            "UNSEEN"
-        )
-
-        print(
-            f"IMAP: поиск завершён, "
-            f"status={status}"
-        )
-
-        if status != "OK":
-
-            print(
-                "Не удалось получить список "
-                "непрочитанных писем."
-            )
-
-            return {
-                "processed": 0,
-                "errors": 1,
-            }
-
-        message_ids = (
-            data[0].split()
-            if data and data[0]
-            else []
+        candidates = search_doctor_messages(
+            mail,
+            doctors_map
         )
 
         print(
-            f"Непрочитанных писем: "
-            f"{len(message_ids)}"
+            f"IMAP: найдено потенциальных писем: "
+            f"{len(candidates)}"
         )
 
-        for message_id in message_ids:
+        for candidate in candidates:
+
+            message_id = candidate[
+                "uid_text"
+            ]
 
             try:
 
                 print(
-                    f"IMAP: получение письма "
-                    f"{message_id.decode(errors='replace')}..."
+                    f"IMAP: FETCH "
+                    f"{message_id}..."
                 )
 
                 status, msg_data = mail.fetch(
-                    message_id,
-                    "(RFC822)"
-                )
-
-                print(
-                    f"IMAP: письмо получено, "
-                    f"status={status}"
+                    candidate["uid"],
+                    "(BODY.PEEK[])"
                 )
 
                 if status != "OK":
 
+                    errors += 1
+
                     print(
-                        "IMAP: fetch завершился "
-                        "с ошибкой."
+                        f"IMAP: FETCH ошибка "
+                        f"{message_id}"
                     )
 
-                    continue
-
-                if not msg_data:
                     continue
 
                 raw_email = None
@@ -1939,39 +2689,43 @@ def process_incoming_answers(
                     message
                 )
 
-                combined = (
-                    subject
-                    + "\n"
-                    + body
+                # Настоящий Message-ID.
+                real_message_id = clean(
+                    message.get(
+                        "Message-ID",
+                        ""
+                    )
                 )
 
-                bot_id = extract_bot_id(
-                    combined
+                # Если Message-ID отсутствует,
+                # используем UID + sender.
+                tracking_message_id = (
+                    real_message_id
+                    or f"imap:{sender}:{message_id}"
                 )
 
                 print(
                     f"IMAP: отправитель={sender}"
                 )
 
-                print(
-                    f"IMAP: BOTON-ID="
-                    f"{bot_id or 'не найден'}"
-                )
+                # ------------------------------------------------
+                # Уже обработано?
+                # ------------------------------------------------
 
-                if not bot_id:
+                if message_was_processed(
+                    log_rows,
+                    tracking_message_id
+                ):
 
-                    # Чужое письмо.
-                    # Помечаем прочитанным.
-                    mail.store(
-                        message_id,
-                        "+FLAGS",
-                        "\\Seen"
+                    print(
+                        "IMAP: письмо уже обработано, "
+                        "пропускаем."
                     )
 
                     continue
 
                 # ------------------------------------------------
-                # Врач по email
+                # Врач должен быть в базе.
                 # ------------------------------------------------
 
                 doctor = None
@@ -1993,99 +2747,256 @@ def process_incoming_answers(
                 if not doctor:
 
                     print(
-                        f"Ответ от неизвестного "
-                        f"email: {sender}"
+                        f"IMAP: отправитель не является "
+                        f"врачом из базы: {sender}"
                     )
 
-                    mail.store(
-                        message_id,
-                        "+FLAGS",
-                        "\\Seen"
-                    )
-
+                    # ВАЖНО:
+                    # ничего не STORE.
                     continue
 
-                # ------------------------------------------------
-                # Дата из BOTON-ID
-                # ------------------------------------------------
-
-                date_match = re.search(
-                    r"BOTON-(\d{8})-",
-                    bot_id,
-                    flags=re.IGNORECASE
+                combined = (
+                    subject
+                    + "\n"
+                    + body
                 )
 
-                if not date_match:
-
-                    print(
-                        f"Неверный BOTON-ID: "
-                        f"{bot_id}"
+                bot_id, send_log = (
+                    find_matching_bot_id(
+                        combined,
+                        log_rows,
+                        sender
                     )
-
-                    mail.store(
-                        message_id,
-                        "+FLAGS",
-                        "\\Seen"
-                    )
-
-                    continue
-
-                try:
-
-                    target_date = (
-                        datetime.strptime(
-                            date_match.group(1),
-                            "%Y%m%d"
-                        ).date()
-                    )
-
-                except ValueError:
-
-                    print(
-                        f"Неверная дата в BOTON-ID: "
-                        f"{bot_id}"
-                    )
-
-                    mail.store(
-                        message_id,
-                        "+FLAGS",
-                        "\\Seen"
-                    )
-
-                    continue
-
-                # ------------------------------------------------
-                # Восстанавливаем задания врача
-                # ------------------------------------------------
-
-                patients = get_patients_for_doctor(
-                    rows,
-                    doctor,
-                    target_date,
-                    include_processed=True,
                 )
 
-                if not patients:
+                print(
+                    f"IMAP: BOTON-ID="
+                    f"{bot_id or 'не найден'}"
+                )
+
+                if not bot_id:
 
                     print(
-                        f"Не найдены задания "
-                        f"для {doctor['name']} "
-                        f"на {target_date}"
-                    )
-
-                    mail.store(
-                        message_id,
-                        "+FLAGS",
-                        "\\Seen"
+                        "IMAP: письмо врача без "
+                        "BOTON-ID — пропускаем."
                     )
 
                     continue
+
+                # ------------------------------------------------
+                # Точная v2.2 карта
+                # ------------------------------------------------
+
+                if send_log:
+
+                    if (
+                        send_log["email"]
+                        and send_log["email"] != sender
+                    ):
+
+                        print(
+                            "IMAP: email ответа не совпадает "
+                            "с email отправления."
+                        )
+
+                        continue
+
+                    mapping = send_log[
+                        "mapping"
+                    ]
+
+                    if not mapping:
+
+                        print(
+                            "IMAP: в BoTon_Log отсутствует "
+                            "карта задания."
+                        )
+
+                        continue
+
+                    target_date = send_log[
+                        "target_date"
+                    ]
+
+                    if not target_date:
+
+                        print(
+                            "IMAP: в журнале отсутствует дата."
+                        )
+
+                        continue
+
+                    # ------------------------------------------------
+                    # Обрабатываем ТОЛЬКО ответ врача.
+                    # Цитату исходного письма исключаем.
+                    # ------------------------------------------------
+
+                    reply_text = extract_reply_text(
+                        body
+                    )
+
+                    statistics, updates = (
+                        apply_doctor_response(
+                            worksheet,
+                            mapping,
+                            reply_text,
+                        )
+                    )
+
+                    if updates:
+
+                        processed += 1
+
+                        result_text = (
+                            f"processed; "
+                            f"done={statistics['done']}; "
+                            f"partial={statistics['partial']}; "
+                            f"not_done={statistics['not_done']}"
+                        )
+
+                        append_log(
+                            log_sheet,
+                            event="RECEIVE",
+                            bot_id=bot_id,
+                            target_date=target_date,
+                            doctor_name=doctor["name"],
+                            email=sender,
+                            message_id=tracking_message_id,
+                            result=result_text,
+                            notes="v2.2 exact mapping",
+                        )
+
+                        log_rows.append([
+                            now_moscow().strftime(
+                                "%d.%m.%Y %H:%M:%S"
+                            ),
+                            "RECEIVE",
+                            bot_id,
+                            target_date.strftime(
+                                "%d.%m.%Y"
+                            ),
+                            doctor["name"],
+                            sender,
+                            "",
+                            tracking_message_id,
+                            result_text,
+                            "v2.2 exact mapping",
+                        ])
+
+                        print(
+                            f"Ответ обработан: "
+                            f"{doctor['name']} "
+                            f"| BOTON-ID={bot_id} "
+                            f"| выполнено="
+                            f"{statistics['done']} "
+                            f"| частично="
+                            f"{statistics['partial']} "
+                            f"| не выполнено="
+                            f"{statistics['not_done']}"
+                        )
+
+                    else:
+
+                        print(
+                            f"Ответ от "
+                            f"{doctor['name']} "
+                            f"не содержит "
+                            f"распознаваемых отметок."
+                        )
+
+                        append_log(
+                            log_sheet,
+                            event="RECEIVE",
+                            bot_id=bot_id,
+                            target_date=target_date,
+                            doctor_name=doctor["name"],
+                            email=sender,
+                            message_id=tracking_message_id,
+                            result="NO_STATUS",
+                            notes="Нет распознаваемых статусов",
+                        )
+
+                        log_rows.append([
+                            now_moscow().strftime(
+                                "%d.%m.%Y %H:%M:%S"
+                            ),
+                            "RECEIVE",
+                            bot_id,
+                            target_date.strftime(
+                                "%d.%m.%Y"
+                            ),
+                            doctor["name"],
+                            sender,
+                            "",
+                            tracking_message_id,
+                            "NO_STATUS",
+                            "Нет распознаваемых статусов",
+                        ])
+
+                    continue
+
+                # ------------------------------------------------
+                # LEGACY v2.1
+                #
+                # Старый BOTON-ID не имеет точной карты.
+                # Обрабатываем только как совместимость.
+                # Новые письма сюда не попадут.
+                # ------------------------------------------------
+
+                legacy_doctor, legacy_date = (
+                    get_legacy_doctor_by_bot_id(
+                        bot_id,
+                        doctors_map
+                    )
+                )
+
+                if not legacy_doctor:
+
+                    print(
+                        f"IMAP: BOTON-ID {bot_id} "
+                        f"не найден в BoTon_Log."
+                    )
+
+                    continue
+
+                print(
+                    f"IMAP: LEGACY BOTON-ID "
+                    f"{bot_id}; точной карты нет."
+                )
+
+                legacy_patients = (
+                    get_patients_for_doctor(
+                        rows,
+                        legacy_doctor,
+                        legacy_date,
+                        include_processed=True,
+                    )
+                )
+
+                if not legacy_patients:
+
+                    print(
+                        "IMAP: legacy-задания "
+                        "не найдены."
+                    )
+
+                    continue
+
+                legacy_mapping = (
+                    build_exact_response_task_map(
+                        legacy_patients
+                    )
+                )
+
+                reply_text = extract_reply_text(
+                    body
+                )
 
                 statistics, updates = (
                     apply_doctor_response(
                         worksheet,
-                        patients,
-                        body,
+                        legacy_mapping,
+                        reply_text,
                     )
                 )
 
@@ -2093,9 +3004,49 @@ def process_incoming_answers(
 
                     processed += 1
 
+                    result_text = (
+                        f"legacy_processed; "
+                        f"done={statistics['done']}; "
+                        f"partial={statistics['partial']}; "
+                        f"not_done={statistics['not_done']}"
+                    )
+
+                    append_log(
+                        log_sheet,
+                        event="RECEIVE",
+                        bot_id=bot_id,
+                        target_date=legacy_date,
+                        doctor_name=legacy_doctor["name"],
+                        email=sender,
+                        message_id=tracking_message_id,
+                        result=result_text,
+                        notes=(
+                            "LEGACY v2.1: "
+                            "карта восстановлена "
+                            "по текущей таблице"
+                        ),
+                    )
+
+                    log_rows.append([
+                        now_moscow().strftime(
+                            "%d.%m.%Y %H:%M:%S"
+                        ),
+                        "RECEIVE",
+                        bot_id,
+                        legacy_date.strftime(
+                            "%d.%m.%Y"
+                        ),
+                        legacy_doctor["name"],
+                        sender,
+                        "",
+                        tracking_message_id,
+                        result_text,
+                        "LEGACY v2.1",
+                    ])
+
                     print(
-                        f"Ответ обработан: "
-                        f"{doctor['name']} "
+                        f"Legacy-ответ обработан: "
+                        f"{legacy_doctor['name']} "
                         f"| выполнено="
                         f"{statistics['done']} "
                         f"| частично="
@@ -2107,17 +3058,31 @@ def process_incoming_answers(
                 else:
 
                     print(
-                        f"Ответ от "
-                        f"{doctor['name']} "
-                        f"не содержит "
-                        f"распознаваемых отметок."
+                        "Legacy-ответ не содержит "
+                        "распознаваемых статусов."
                     )
 
-                mail.store(
-                    message_id,
-                    "+FLAGS",
-                    "\\Seen"
+            except (
+                imaplib.IMAP4.abort,
+                EOFError,
+                OSError,
+            ) as error:
+
+                errors += 1
+
+                print(
+                    "IMAP: соединение прервано "
+                    f"во время обработки: "
+                    f"{type(error).__name__}: "
+                    f"{error}"
                 )
+
+                print(
+                    "IMAP: прекращаю текущую "
+                    "обработку входящих."
+                )
+
+                break
 
             except Exception as error:
 
@@ -2129,16 +3094,21 @@ def process_incoming_answers(
                     f"{error}"
                 )
 
-                try:
+                # НИКАКОГО STORE.
+                continue
 
-                    mail.store(
-                        message_id,
-                        "+FLAGS",
-                        "\\Seen"
-                    )
+    except (
+        imaplib.IMAP4.abort,
+        EOFError,
+        OSError,
+    ) as error:
 
-                except Exception:
-                    pass
+        errors += 1
+
+        print(
+            f"IMAP: соединение аварийно "
+            f"завершено: {error}"
+        )
 
     finally:
 
@@ -2148,11 +3118,13 @@ def process_incoming_answers(
 
         try:
             mail.close()
+
         except Exception:
             pass
 
         try:
             mail.logout()
+
         except Exception:
             pass
 
@@ -2218,17 +3190,15 @@ def calculate_report(
                 patient["tasks"]
             )
 
-        doctor_stats[doctor_key] = stat
+        doctor_stats[
+            doctor_key
+        ] = stat
 
         total_patients += len(
             patients
         )
 
         total_tasks += stat["tasks"]
-
-    # --------------------------------------------------------
-    # Второй проход по H/J/L
-    # --------------------------------------------------------
 
     for row in rows:
 
@@ -2411,7 +3381,9 @@ def build_report(
 
     lines.append("")
 
-    lines.append("По врачам:")
+    lines.append(
+        "По врачам:"
+    )
 
     for stat in sorted(
         doctors.values(),
@@ -2488,6 +3460,7 @@ def send_report(report_text):
 
             try:
                 smtp.quit()
+
             except Exception:
                 pass
 
@@ -2518,7 +3491,12 @@ def main():
         "Подключение к Google Sheets..."
     )
 
-    tasks_sheet, doctors_sheet = get_sheets()
+    (
+        tasks_ss,
+        tasks_sheet,
+        doctors_sheet,
+        log_sheet,
+    ) = get_sheets()
 
     print(
         "Google Sheets: OK"
@@ -2540,6 +3518,10 @@ def main():
         f"{len(doctors_map)}"
     )
 
+    print(
+        f"BoTon_Log: {LOG_SHEET_NAME}"
+    )
+
     target_date = today_moscow()
 
     # --------------------------------------------------------
@@ -2548,6 +3530,7 @@ def main():
 
     incoming = process_incoming_answers(
         tasks_sheet,
+        log_sheet,
         rows,
         doctors_map,
     )
@@ -2576,6 +3559,7 @@ def main():
 
         send_today_assignments(
             tasks_sheet,
+            log_sheet,
             doctors_map,
             rows,
             target_date,
