@@ -475,13 +475,13 @@ def run_tasks_dispatch():
 
     data = tasks_sheet.get_all_values()
 
-    print(
+       print(
         "Google Sheets: OK"
     )
 
-  print(
-    "Строк:",
-    len(data),
+    print(
+        "Строк:",
+        len(data),
     )
     # --------------------------------------------------------
     # Дата Москва
