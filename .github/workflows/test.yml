@@ -1,44 +1,42 @@
-name: Boton
+name: BoTon
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "0,15,30,45 5-10 * * *"
+    - cron: '0,30 * * * *'
 
-concurrency:
-  group: boton-dispatch
-  cancel-in-progress: false
+  workflow_dispatch:
 
 jobs:
-  bot:
+  run-boton:
+
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Получить код
         uses: actions/checkout@v4
 
       - name: Установить Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: '3.11'
 
       - name: Установить библиотеки
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
 
       - name: Проверить IMAP Yandex
         run: |
-          echo "===== ПРОВЕРКА DNS IMAP ====="
+          echo "Проверка DNS:"
           getent hosts imap.yandex.ru || true
 
-          echo "===== ПРОВЕРКА PORT 993 ====="
+          echo "Проверка порта 993:"
+
           python - <<'PY'
           import socket
 
           host = "imap.yandex.ru"
           port = 993
-
-          print(f"Host: {host}")
-          print(f"Port: {port}")
 
           try:
               ip = socket.gethostbyname(host)
@@ -47,9 +45,15 @@ jobs:
               print(f"DNS ERROR: {e}")
 
           try:
-              s = socket.create_connection((host, port), timeout=10)
+              s = socket.create_connection(
+                  (host, port),
+                  timeout=10
+              )
+
               print("TCP 993 OK")
+
               s.close()
+
           except Exception as e:
               print(f"TCP ERROR: {e}")
           PY
@@ -69,4 +73,5 @@ jobs:
           IMAP_USER: ${{ secrets.IMAP_USER }}
           IMAP_PASSWORD: ${{ secrets.IMAP_PASSWORD }}
 
-        run: python main.py
+        run: |
+          python main.py
