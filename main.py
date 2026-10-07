@@ -1,9 +1,9 @@
 # ============================================================
-# BoTon v2.0
+# BoTon v2.1
 # Рассылка заданий + приём ответов врачей + запись H/J/L
 # + отчёт заведующему
 #
-# VERSION: 2.0
+# VERSION: 2.1
 # ============================================================
 
 import os
@@ -11,24 +11,26 @@ import re
 import ssl
 import imaplib
 import smtplib
+import json
+
 from collections import defaultdict
-from datetime import datetime, date
+from datetime import datetime
 from email import policy
 from email.header import decode_header
 from email.message import EmailMessage
 from email.parser import BytesParser
 from email.utils import parseaddr
+from zoneinfo import ZoneInfo
 
 import gspread
 from google.oauth2.service_account import Credentials
-from zoneinfo import ZoneInfo
 
 
 # ============================================================
 # КОНФИГУРАЦИЯ
 # ============================================================
 
-VERSION = "2.0"
+VERSION = "2.1"
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
@@ -36,69 +38,124 @@ MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 # Google Sheets
 # ------------------------------------------------------------
 
-TASKS_SPREADSHEET_ID = "13maufkGFPUdNE-d_i_nvC4l5xf3ParmuFCNYJ32wmVk"
+TASKS_SPREADSHEET_ID = (
+    "13maufkGFPUdNE-d_i_nvC4l5xf3ParmuFCNYJ32wmVk"
+)
+
 TASKS_SHEET_NAME = "Лист1"
 
-DOCTORS_SPREADSHEET_ID = "1grwcVilkiwOI01UgWu4jrhOLV2GVM7TJ6TqlXE7enAU"
+DOCTORS_SPREADSHEET_ID = (
+    "1grwcVilkiwOI01UgWu4jrhOLV2GVM7TJ6TqlXE7enAU"
+)
+
 DOCTORS_SHEET_NAME = "Врачи"
+
 
 # ------------------------------------------------------------
 # Колонки базы врачей
-# A = ФИО
-# B = Chat ID
-# C = Email
 # ------------------------------------------------------------
 
 COL_DOCTOR_NAME = 0
 COL_DOCTOR_CHAT_ID = 1
 COL_DOCTOR_EMAIL = 2
 
+
 # ------------------------------------------------------------
 # Колонки таблицы заданий
 # ------------------------------------------------------------
 
-COL_DATE = 0       # A
-COL_BRANCH = 1     # B
-COL_DOCTOR = 2     # C
-COL_OMS = 3        # D
-COL_PATIENT = 4    # E
-COL_SOURCE = 5     # F
+COL_DATE = 0
+COL_BRANCH = 1
+COL_DOCTOR = 2
+COL_OMS = 3
+COL_PATIENT = 4
+COL_SOURCE = 5
 
-COL_TASK1 = 6      # G
-COL_DONE1 = 7      # H
+COL_TASK1 = 6
+COL_DONE1 = 7
 
-COL_TASK2 = 8      # I
-COL_DONE2 = 9      # J
+COL_TASK2 = 8
+COL_DONE2 = 9
 
-COL_TASK3 = 10     # K
-COL_DONE3 = 11     # L
+COL_TASK3 = 10
+COL_DONE3 = 11
 
-COL_SEND_STATUS = 12  # M
+COL_SEND_STATUS = 12
 
 
 # ============================================================
 # ENV / SECRETS
 # ============================================================
 
-GOOGLE_SERVICE_ACCOUNT = os.environ.get("GOOGLE_SERVICE_ACCOUNT", "")
+GOOGLE_SERVICE_ACCOUNT = os.environ.get(
+    "GOOGLE_SERVICE_ACCOUNT",
+    ""
+)
 
-SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.yandex.ru")
-SMTP_PORT = int(os.environ.get("SMTP_PORT", "465"))
-SMTP_USER = os.environ.get("SMTP_USER", "")
-SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
-SMTP_FROM_EMAIL = os.environ.get("SMTP_FROM_EMAIL", SMTP_USER)
+SMTP_HOST = os.environ.get(
+    "SMTP_HOST",
+    "smtp.yandex.ru"
+)
 
-# IMAP.
-# Для Яндекса:
-# IMAP_HOST = imap.yandex.ru
-# IMAP_PORT = 993
-IMAP_HOST = os.environ.get("IMAP_HOST", "imap.yandex.ru")
-IMAP_PORT = int(os.environ.get("IMAP_PORT", "993"))
-IMAP_USER = os.environ.get("IMAP_USER", SMTP_USER)
-IMAP_PASSWORD = os.environ.get("IMAP_PASSWORD", SMTP_PASSWORD)
+SMTP_PORT = int(
+    os.environ.get(
+        "SMTP_PORT",
+        "465"
+    )
+)
 
+SMTP_USER = os.environ.get(
+    "SMTP_USER",
+    ""
+)
+
+SMTP_PASSWORD = os.environ.get(
+    "SMTP_PASSWORD",
+    ""
+)
+
+SMTP_FROM_EMAIL = os.environ.get(
+    "SMTP_FROM_EMAIL",
+    SMTP_USER
+)
+
+
+# ------------------------------------------------------------
+# IMAP
+# ------------------------------------------------------------
+
+IMAP_HOST = os.environ.get(
+    "IMAP_HOST",
+    "imap.yandex.ru"
+)
+
+IMAP_PORT = int(
+    os.environ.get(
+        "IMAP_PORT",
+        "993"
+    )
+)
+
+IMAP_USER = os.environ.get(
+    "IMAP_USER",
+    SMTP_USER
+)
+
+IMAP_PASSWORD = os.environ.get(
+    "IMAP_PASSWORD",
+    SMTP_PASSWORD
+)
+
+# Жёсткий timeout IMAP.
+IMAP_TIMEOUT = 20
+
+
+# ------------------------------------------------------------
 # Резервная почта
+# ------------------------------------------------------------
+
 RESERVE_EMAIL = "eagaverdiev@mosmedzdrav.ru"
+
 
 # ------------------------------------------------------------
 # Филиал 2
@@ -114,14 +171,13 @@ BRANCH_KEYWORDS = [
     "гп 107 ф2",
 ]
 
+
 # ------------------------------------------------------------
-# Тестовый режим
+# Режимы
 # ------------------------------------------------------------
 
 TEST_MODE = False
 
-# Если True — письма не отправляются и таблица не меняется.
-# Удобно для первого запуска v2.0.
 TEST_RECEIVE_ONLY = False
 
 
@@ -147,7 +203,10 @@ def clean(value):
 
     value = str(value).strip()
 
-    if value.lower() in {"null", "undefined"}:
+    if value.lower() in {
+        "null",
+        "undefined"
+    }:
         return ""
 
     return value
@@ -156,8 +215,20 @@ def clean(value):
 def normalize_text(value):
     value = clean(value).lower()
     value = value.replace("ё", "е")
-    value = re.sub(r"[^\w\s]", " ", value, flags=re.UNICODE)
-    value = re.sub(r"\s+", " ", value)
+
+    value = re.sub(
+        r"[^\w\s]",
+        " ",
+        value,
+        flags=re.UNICODE
+    )
+
+    value = re.sub(
+        r"\s+",
+        " ",
+        value
+    )
+
     return value.strip()
 
 
@@ -193,7 +264,10 @@ def parse_date(value):
 
     for fmt in formats:
         try:
-            return datetime.strptime(value, fmt).date()
+            return datetime.strptime(
+                value,
+                fmt
+            ).date()
         except ValueError:
             pass
 
@@ -205,16 +279,6 @@ def parse_date(value):
 # ============================================================
 
 def get_signature(name):
-    """
-    Преобразует:
-
-    О.В. Нецветаева
-    Нецветаева О.В.
-    Нецветаева Ольга Викторовна
-
-    в сопоставимый ключ.
-    """
-
     name = normalize_text(name)
 
     if not name:
@@ -225,10 +289,22 @@ def get_signature(name):
     if not parts:
         return ""
 
-    # Если первая часть — инициалы, а фамилия идёт второй
-    if len(parts) >= 2 and re.fullmatch(r"[а-я]\.?[а-я]?\.?", parts[0]):
+    # Например:
+    # О.В. Нецветаева
+    if (
+        len(parts) >= 2
+        and re.fullmatch(
+            r"[а-я]\.?[а-я]?\.?",
+            parts[0]
+        )
+    ):
         surname = parts[1]
-        initials = re.sub(r"[^а-я]", "", parts[0])
+
+        initials = re.sub(
+            r"[^а-я]",
+            "",
+            parts[0]
+        )
 
         return f"{surname} {initials}".strip()
 
@@ -237,7 +313,11 @@ def get_signature(name):
     initials = ""
 
     for part in parts[1:]:
-        letters = re.sub(r"[^а-я]", "", part)
+        letters = re.sub(
+            r"[^а-я]",
+            "",
+            part
+        )
 
         if letters:
             initials += letters[0]
@@ -256,13 +336,6 @@ def initials_of_signature(signature):
 
 
 def find_doctor(contact_name, doctors_map):
-    """
-    Надёжное сопоставление врача:
-    1. exact
-    2. фамилия + инициалы
-    3. совместимые инициалы
-    4. частичное совпадение фамилии
-    """
 
     signature = get_signature(contact_name)
 
@@ -310,7 +383,7 @@ def find_doctor(contact_name, doctors_map):
 
 
 # ============================================================
-# ПОЛУЧЕНИЕ GOOGLE SHEETS
+# GOOGLE SHEETS
 # ============================================================
 
 def get_google_client():
@@ -325,13 +398,15 @@ def get_google_client():
         "https://www.googleapis.com/auth/drive",
     ]
 
-    credentials_info = __import__("json").loads(
+    credentials_info = json.loads(
         GOOGLE_SERVICE_ACCOUNT
     )
 
-    credentials = Credentials.from_service_account_info(
-        credentials_info,
-        scopes=scopes,
+    credentials = (
+        Credentials.from_service_account_info(
+            credentials_info,
+            scopes=scopes
+        )
     )
 
     return gspread.authorize(credentials)
@@ -433,38 +508,29 @@ TASK_DEFINITIONS = [
 ]
 
 
-def is_status_empty(value):
-    value = clean(value)
-
-    return value == ""
-
-
 def make_send_status(email):
-    now = now_moscow()
 
     return (
         f"✅ Отправлено "
-        f"{now.strftime('%d.%m.%Y %H:%M')} "
+        f"{now_moscow().strftime('%d.%m.%Y %H:%M')} "
         f"на {email}"
     )
 
 
 def make_reserve_status():
-    now = now_moscow()
 
     return (
         f"✅ Отправлено "
-        f"{now.strftime('%d.%m.%Y %H:%M')} "
+        f"{now_moscow().strftime('%d.%m.%Y %H:%M')} "
         f"на резервную почту"
     )
 
 
 def make_error_status():
-    now = now_moscow()
 
     return (
         f"❌ Ошибка отправки "
-        f"{now.strftime('%d.%m.%Y %H:%M')}"
+        f"{now_moscow().strftime('%d.%m.%Y %H:%M')}"
     )
 
 
@@ -497,7 +563,7 @@ def get_tasks_from_row(row, row_number):
 
 
 # ============================================================
-# ГРУППИРОВКА ПАЦИЕНТОВ
+# ПАЦИЕНТ
 # ============================================================
 
 def patient_key(row):
@@ -514,199 +580,8 @@ def patient_key(row):
         else ""
     )
 
-    # Основной ключ — ID/ОМС.
-    # Если его нет — ФИО.
     return oms or normalize_text(patient)
 
-
-def build_doctor_patients(rows, doctor_name, target_date):
-
-    patients = {}
-
-    for index, row in enumerate(rows, start=2):
-
-        if len(row) <= COL_DOCTOR:
-            continue
-
-        row_date = parse_date(
-            row[COL_DATE]
-            if len(row) > COL_DATE
-            else ""
-        )
-
-        if row_date != target_date:
-            continue
-
-        branch = (
-            row[COL_BRANCH]
-            if len(row) > COL_BRANCH
-            else ""
-        )
-
-        if not is_target_branch(branch):
-            continue
-
-        row_doctor = clean(
-            row[COL_DOCTOR]
-        )
-
-        if not row_doctor:
-            continue
-
-        if not find_doctor(
-            row_doctor,
-            {
-                get_signature(doctor_name): {
-                    "name": doctor_name
-                }
-            },
-        ):
-            continue
-
-        status = clean(
-            row[COL_SEND_STATUS]
-            if len(row) > COL_SEND_STATUS
-            else ""
-        )
-
-        # M заполнена = строка уже отправлялась.
-        if status:
-            continue
-
-        tasks = get_tasks_from_row(
-            row,
-            index
-        )
-
-        if not tasks:
-            continue
-
-        key = patient_key(row)
-
-        if key not in patients:
-
-            patients[key] = {
-                "patient": clean(row[COL_PATIENT]),
-                "oms": clean(row[COL_OMS]),
-                "rows": [],
-                "tasks": [],
-            }
-
-        patients[key]["rows"].append(index)
-        patients[key]["tasks"].extend(tasks)
-
-    return list(patients.values())
-
-
-# ============================================================
-# ПОЛУЧЕНИЕ ВСЕХ ЗАДАНИЙ НА СЕГОДНЯ
-# ============================================================
-
-def collect_today_assignments(
-    rows,
-    doctors_map,
-    target_date,
-):
-
-    assignments = defaultdict(list)
-
-    diagnostics = {
-        "empty": 0,
-        "bad_date": 0,
-        "other_date": 0,
-        "other_branch": 0,
-        "processed": 0,
-        "without_doctor": 0,
-        "doctor_not_found": 0,
-        "without_tasks": 0,
-    }
-
-    for index, row in enumerate(rows, start=2):
-
-        if not row:
-            diagnostics["empty"] += 1
-            continue
-
-        row_date = parse_date(
-            row[COL_DATE]
-            if len(row) > COL_DATE
-            else ""
-        )
-
-        if row_date is None:
-            diagnostics["bad_date"] += 1
-            continue
-
-        if row_date != target_date:
-            diagnostics["other_date"] += 1
-            continue
-
-        branch = (
-            row[COL_BRANCH]
-            if len(row) > COL_BRANCH
-            else ""
-        )
-
-        if not is_target_branch(branch):
-            diagnostics["other_branch"] += 1
-            continue
-
-        doctor_name = clean(
-            row[COL_DOCTOR]
-            if len(row) > COL_DOCTOR
-            else ""
-        )
-
-        if not doctor_name:
-            diagnostics["without_doctor"] += 1
-            continue
-
-        doctor = find_doctor(
-            doctor_name,
-            doctors_map
-        )
-
-        if not doctor:
-            diagnostics["doctor_not_found"] += 1
-            continue
-
-        status = clean(
-            row[COL_SEND_STATUS]
-            if len(row) > COL_SEND_STATUS
-            else ""
-        )
-
-        if status:
-            continue
-
-        tasks = get_tasks_from_row(
-            row,
-            index
-        )
-
-        if not tasks:
-            diagnostics["without_tasks"] += 1
-            continue
-
-        doctor_key = get_signature(
-            doctor["name"]
-        )
-
-        assignments[doctor_key].append({
-            "row_number": index,
-            "row": row,
-            "doctor": doctor,
-            "tasks": tasks,
-        })
-
-        diagnostics["processed"] += 1
-
-    return assignments, diagnostics
-
-
-# ============================================================
-# ПЕРЕГРУППИРОВКА ПО ПАЦИЕНТАМ
-# ============================================================
 
 def group_assignment_rows(items):
 
@@ -762,9 +637,12 @@ TASK_LETTERS = [
 ]
 
 
-def task_label(patient_number, task_index, total_tasks):
+def task_label(
+    patient_number,
+    task_index,
+    total_tasks
+):
 
-    # Если у пациента одно задание — только номер.
     if total_tasks == 1:
         return str(patient_number)
 
@@ -775,50 +653,85 @@ def task_label(patient_number, task_index, total_tasks):
 
 
 # ============================================================
-# ТЕКСТ ПИСЬМА
+# ПРИВЕТСТВИЕ
 # ============================================================
 
 def extract_first_name_patronymic(full_name):
 
-    """
-    База A обычно содержит:
-    Вельмакина Ю.А.
-
-    Поэтому без отдельного справочника
-    нельзя безопасно восстановить полное имя.
-
-    Если в будущем в базе появятся полные ФИО,
-    функция автоматически сможет их использовать.
-    """
-
     name = clean(full_name)
 
-    # Полное ФИО
     parts = name.split()
 
     if len(parts) >= 3:
 
-        first = parts[1]
-        patronymic = parts[2]
+        return (
+            f"{parts[1]} "
+            f"{parts[2]}"
+        )
 
-        return f"{first} {patronymic}"
-
-    # Пока безопасный fallback
     return name
 
 
 def make_greeting(doctor):
 
-    display_name = doctor.get(
-        "full_name"
-    ) or extract_first_name_patronymic(
-        doctor["name"]
+    display_name = (
+        doctor.get("full_name")
+        or extract_first_name_patronymic(
+            doctor["name"]
+        )
     )
 
     return (
         f"Уважаемая(ый) {display_name}!"
     )
 
+
+# ============================================================
+# BOTON-ID
+# ============================================================
+
+def make_doctor_key(doctor):
+
+    signature = get_signature(
+        doctor["name"]
+    )
+
+    return re.sub(
+        r"[^a-zа-я0-9]+",
+        "-",
+        signature
+    )
+
+
+def make_bot_id(
+    target_date,
+    doctor
+):
+
+    return (
+        f"BOTON-"
+        f"{target_date.strftime('%Y%m%d')}-"
+        f"{make_doctor_key(doctor)}"
+    )
+
+
+def extract_bot_id(text):
+
+    match = re.search(
+        r"\[BOTON-ID:([^\]]+)\]",
+        text,
+        flags=re.IGNORECASE
+    )
+
+    if match:
+        return match.group(1).strip()
+
+    return ""
+
+
+# ============================================================
+# ПИСЬМО
+# ============================================================
 
 def build_email_body(
     doctor,
@@ -850,6 +763,7 @@ def build_email_body(
     ):
 
         tasks = patient["tasks"]
+
         total_tasks += len(tasks)
 
         lines.append(
@@ -875,17 +789,22 @@ def build_email_body(
             )
 
             if multiple:
+
                 lines.append(
                     f"   {label[-1]}. "
                     f"{task['title']}:"
                 )
+
                 lines.append(
                     f"      {task['text']}"
                 )
+
             else:
+
                 lines.append(
                     f"{task['title']}:"
                 )
+
                 lines.append(
                     f"{task['text']}"
                 )
@@ -910,15 +829,13 @@ def build_email_body(
     lines.append("")
 
     lines.append(
-        "Ответьте на это письмо, указав выполненные "
-        "и невыполненные задания."
+        "Ответьте на это письмо, указав "
+        "выполненные и невыполненные задания."
     )
 
     lines.append("")
 
-    lines.append(
-        "Примеры ответа:"
-    )
+    lines.append("Примеры ответа:")
 
     lines.append(
         "Выполнено: 1, 2, 3"
@@ -953,9 +870,7 @@ def build_email_body(
 
     lines.append("")
 
-    lines.append(
-        "С уважением,"
-    )
+    lines.append("С уважением,")
 
     lines.append(
         "BoTon и Агаввердиев Э.М."
@@ -967,9 +882,8 @@ def build_email_body(
         )
     )
 
-    # Технический ID.
-    # Нужен боту для определения конкретной рассылки.
     lines.append("")
+
     lines.append(
         f"[BOTON-ID:{bot_id}]"
     )
@@ -978,43 +892,15 @@ def build_email_body(
 
 
 # ============================================================
-# ИДЕНТИФИКАТОР РАССЫЛКИ
-# ============================================================
-
-def make_doctor_key(doctor):
-
-    signature = get_signature(
-        doctor["name"]
-    )
-
-    return re.sub(
-        r"[^a-zа-я0-9]+",
-        "-",
-        signature
-    )
-
-
-def make_bot_id(target_date, doctor):
-
-    date_part = target_date.strftime(
-        "%Y%m%d"
-    )
-
-    doctor_key = make_doctor_key(
-        doctor
-    )
-
-    return (
-        f"BOTON-{date_part}-"
-        f"{doctor_key}"
-    )
-
-
-# ============================================================
 # SMTP
 # ============================================================
 
 def smtp_connect():
+
+    print(
+        f"SMTP: подключение к "
+        f"{SMTP_HOST}:{SMTP_PORT}..."
+    )
 
     context = ssl.create_default_context()
 
@@ -1025,10 +911,14 @@ def smtp_connect():
         timeout=30,
     )
 
+    print("SMTP: SSL OK")
+
     server.login(
         SMTP_USER,
         SMTP_PASSWORD,
     )
+
+    print("SMTP: авторизация OK")
 
     return server
 
@@ -1080,6 +970,7 @@ def decode_mime_header(value):
                 )
 
             except Exception:
+
                 result.append(
                     part.decode(
                         "utf-8",
@@ -1088,7 +979,10 @@ def decode_mime_header(value):
                 )
 
         else:
-            result.append(str(part))
+
+            result.append(
+                str(part)
+            )
 
     return "".join(result)
 
@@ -1101,21 +995,28 @@ def get_email_body(message):
 
         for part in message.walk():
 
-            content_type = part.get_content_type()
+            content_type = (
+                part.get_content_type()
+            )
 
             disposition = str(
-                part.get("Content-Disposition") or ""
+                part.get(
+                    "Content-Disposition"
+                )
+                or ""
             )
 
             if (
                 content_type == "text/plain"
-                and "attachment" not in disposition.lower()
+                and "attachment"
+                not in disposition.lower()
             ):
 
                 try:
                     text = part.get_content()
 
                 except Exception:
+
                     payload = part.get_payload(
                         decode=True
                     )
@@ -1141,9 +1042,11 @@ def get_email_body(message):
             )
 
     try:
+
         return message.get_content()
 
     except Exception:
+
         payload = message.get_payload(
             decode=True
         )
@@ -1157,25 +1060,46 @@ def get_email_body(message):
         )
 
 
-def extract_bot_id(text):
+def connect_imap():
 
-    match = re.search(
-        r"\[BOTON-ID:([^\]]+)\]",
-        text,
-        flags=re.IGNORECASE,
+    print(
+        f"IMAP: подключение к "
+        f"{IMAP_HOST}:{IMAP_PORT}..."
     )
 
-    if match:
-        return match.group(1).strip()
-
-    return ""
-
-
-def connect_imap():
+    # --------------------------------------------------------
+    # Ключевое исправление v2.1:
+    # timeout=20 предотвращает бесконечное зависание.
+    # --------------------------------------------------------
 
     mail = imaplib.IMAP4_SSL(
         IMAP_HOST,
-        IMAP_PORT
+        IMAP_PORT,
+        timeout=IMAP_TIMEOUT,
+    )
+
+    print(
+        "IMAP: SSL-соединение установлено"
+    )
+
+    # Дополнительный timeout сокета.
+    try:
+
+        if getattr(mail, "sock", None):
+            mail.sock.settimeout(
+                IMAP_TIMEOUT
+            )
+
+    except Exception as error:
+
+        print(
+            f"IMAP: не удалось установить "
+            f"timeout сокета: {error}"
+        )
+
+    print(
+        f"IMAP: авторизация пользователя "
+        f"{IMAP_USER}..."
     )
 
     mail.login(
@@ -1183,13 +1107,35 @@ def connect_imap():
         IMAP_PASSWORD
     )
 
-    mail.select("INBOX")
+    print(
+        "IMAP: авторизация OK"
+    )
+
+    print(
+        "IMAP: открытие INBOX..."
+    )
+
+    status, data = mail.select(
+        "INBOX",
+        readonly=True
+    )
+
+    if status != "OK":
+
+        raise RuntimeError(
+            f"IMAP: не удалось открыть INBOX: "
+            f"{data}"
+        )
+
+    print(
+        "IMAP: INBOX открыт"
+    )
 
     return mail
 
 
 # ============================================================
-# РАЗБОР ОТВЕТА ВРАЧА
+# РАЗБОР ОТВЕТА
 # ============================================================
 
 STATUS_DONE = "done"
@@ -1199,7 +1145,10 @@ STATUS_NOT_DONE = "not_done"
 
 def normalize_answer_text(text):
 
-    text = text.replace("\r", "\n")
+    text = text.replace(
+        "\r",
+        "\n"
+    )
 
     text = re.sub(
         r"[ \t]+",
@@ -1212,18 +1161,6 @@ def normalize_answer_text(text):
 
 def parse_status_sections(text):
 
-    """
-    Ищет:
-
-    Выполнено: 1, 2А, 3
-    Не выполнено: 2Б
-    Частично: 3В
-
-    Допускаются:
-    Выполнено - 1, 2
-    Выполнено 1, 2
-    """
-
     text = normalize_answer_text(
         text
     )
@@ -1235,6 +1172,7 @@ def parse_status_sections(text):
     }
 
     patterns = {
+
         STATUS_DONE: [
             r"выполнено\s*[:\-]?\s*([^\n]+)",
             r"выполнены\s*[:\-]?\s*([^\n]+)",
@@ -1285,12 +1223,10 @@ def parse_status_sections(text):
 
 
 # ============================================================
-# СОЗДАНИЕ КАРТЫ ЗАДАНИЙ ДЛЯ ОТВЕТА
+# КАРТА ЗАДАНИЙ
 # ============================================================
 
-def build_response_task_map(
-    patients
-):
+def build_response_task_map(patients):
 
     mapping = {}
 
@@ -1322,10 +1258,6 @@ def build_response_task_map(
     return mapping
 
 
-# ============================================================
-# РАЗВОРАЧИВАНИЕ ОТМЕТОК
-# ============================================================
-
 def expand_status_items(
     items,
     patients,
@@ -1336,14 +1268,15 @@ def expand_status_items(
 
     for patient_number, letter in items:
 
-        # Номер без буквы = ВСЕ задания пациента.
-        if not letter:
+        if (
+            patient_number < 1
+            or patient_number > len(patients)
+        ):
+            continue
 
-            if (
-                patient_number < 1
-                or patient_number > len(patients)
-            ):
-                continue
+        # Номер без буквы =
+        # все задания пациента.
+        if not letter:
 
             patient = patients[
                 patient_number - 1
@@ -1364,7 +1297,9 @@ def expand_status_items(
 
                     key = (
                         patient_number,
-                        TASK_LETTERS[task_index]
+                        TASK_LETTERS[
+                            task_index
+                        ]
                     )
 
                 if key in mapping:
@@ -1421,9 +1356,6 @@ def apply_doctor_response(
 
     # Приоритет:
     # Не выполнено > Частично > Выполнено
-    #
-    # Это защищает от случайного пересечения
-    # одного задания в разных разделах.
 
     partial -= not_done
     done -= not_done
@@ -1460,24 +1392,23 @@ def apply_doctor_response(
     for key, task in mapping.items():
 
         if key in done:
+
             status = STATUS_DONE
 
         elif key in partial:
+
             status = STATUS_PARTIAL
 
         elif key in not_done:
+
             status = STATUS_NOT_DONE
 
         else:
+
             continue
 
-        row_number = task[
-            "row_number"
-        ]
-
-        status_col = task[
-            "status_col"
-        ]
+        row_number = task["row_number"]
+        status_col = task["status_col"]
 
         cell = (
             gspread.utils.rowcol_to_a1(
@@ -1506,7 +1437,7 @@ def apply_doctor_response(
 
 
 # ============================================================
-# ПОИСК ПАЦИЕНТОВ ПО ДНЮ И ВРАЧУ
+# ПАЦИЕНТЫ ВРАЧА
 # ============================================================
 
 def get_patients_for_doctor(
@@ -1527,6 +1458,9 @@ def get_patients_for_doctor(
         start=2
     ):
 
+        if len(row) <= COL_DOCTOR:
+            continue
+
         row_date = parse_date(
             row[COL_DATE]
             if len(row) > COL_DATE
@@ -1545,8 +1479,6 @@ def get_patients_for_doctor(
 
         row_doctor = clean(
             row[COL_DOCTOR]
-            if len(row) > COL_DOCTOR
-            else ""
         )
 
         matched = find_doctor(
@@ -1565,7 +1497,10 @@ def get_patients_for_doctor(
             else ""
         )
 
-        if send_status and not include_processed:
+        if (
+            send_status
+            and not include_processed
+        ):
             continue
 
         tasks = get_tasks_from_row(
@@ -1605,7 +1540,7 @@ def get_patients_for_doctor(
 
 
 # ============================================================
-# ОТПРАВКА УТРЕННИХ ЗАДАНИЙ
+# РАССЫЛКА
 # ============================================================
 
 def send_today_assignments(
@@ -1686,17 +1621,22 @@ def send_today_assignments(
         })
 
     if not assignments:
+
         print(
             "Новых заданий для рассылки нет."
         )
+
         return
 
     smtp = None
 
     try:
+
         smtp = smtp_connect()
 
-        print("SMTP: OK")
+        print(
+            "SMTP: OK"
+        )
 
         for doctor_key, items in assignments.items():
 
@@ -1707,6 +1647,7 @@ def send_today_assignments(
             )
 
             if not email:
+
                 print(
                     f"Нет email у врача: "
                     f"{doctor['name']}"
@@ -1728,7 +1669,8 @@ def send_today_assignments(
 
             subject = (
                 f"BoTon — задания "
-                f"на {target_date.strftime('%d.%m.%Y')} "
+                f"на "
+                f"{target_date.strftime('%d.%m.%Y')} "
                 f"[{bot_id}]"
             )
 
@@ -1739,14 +1681,28 @@ def send_today_assignments(
                 bot_id,
             )
 
-            if TEST_MODE or TEST_RECEIVE_ONLY:
+            if (
+                TEST_MODE
+                or TEST_RECEIVE_ONLY
+            ):
 
                 print(
-                    f"\n===== TEST EMAIL =====\n"
-                    f"To: {email}\n"
-                    f"Subject: {subject}\n\n"
-                    f"{body}\n"
-                    f"======================\n"
+                    "\n===== TEST EMAIL ====="
+                )
+
+                print(
+                    f"To: {email}"
+                )
+
+                print(
+                    f"Subject: {subject}"
+                )
+
+                print("")
+                print(body)
+
+                print(
+                    "======================"
                 )
 
                 continue
@@ -1768,9 +1724,12 @@ def send_today_assignments(
 
                 for item in items:
 
-                    cell = gspread.utils.rowcol_to_a1(
-                        item["row_number"],
-                        COL_SEND_STATUS + 1
+                    cell = (
+                        gspread.utils
+                        .rowcol_to_a1(
+                            item["row_number"],
+                            COL_SEND_STATUS + 1
+                        )
                     )
 
                     updates.append({
@@ -1807,9 +1766,12 @@ def send_today_assignments(
 
                     for item in items:
 
-                        cell = gspread.utils.rowcol_to_a1(
-                            item["row_number"],
-                            COL_SEND_STATUS + 1
+                        cell = (
+                            gspread.utils
+                            .rowcol_to_a1(
+                                item["row_number"],
+                                COL_SEND_STATUS + 1
+                            )
                         )
 
                         updates.append({
@@ -1835,7 +1797,7 @@ def send_today_assignments(
 
 
 # ============================================================
-# ОБРАБОТКА ВХОДЯЩИХ ОТВЕТОВ
+# ВХОДЯЩИЕ ПИСЬМА
 # ============================================================
 
 def process_incoming_answers(
@@ -1855,12 +1817,14 @@ def process_incoming_answers(
     except Exception as error:
 
         print(
-            f"IMAP ошибка подключения: {error}"
+            f"IMAP ошибка подключения: "
+            f"{type(error).__name__}: "
+            f"{error}"
         )
 
         return {
             "processed": 0,
-            "errors": 0,
+            "errors": 1,
         }
 
     processed = 0
@@ -1868,9 +1832,18 @@ def process_incoming_answers(
 
     try:
 
+        print(
+            "IMAP: поиск непрочитанных писем..."
+        )
+
         status, data = mail.search(
             None,
             "UNSEEN"
+        )
+
+        print(
+            f"IMAP: поиск завершён, "
+            f"status={status}"
         )
 
         if status != "OK":
@@ -1882,10 +1855,14 @@ def process_incoming_answers(
 
             return {
                 "processed": 0,
-                "errors": 0,
+                "errors": 1,
             }
 
-        message_ids = data[0].split()
+        message_ids = (
+            data[0].split()
+            if data and data[0]
+            else []
+        )
 
         print(
             f"Непрочитанных писем: "
@@ -1896,15 +1873,47 @@ def process_incoming_answers(
 
             try:
 
+                print(
+                    f"IMAP: получение письма "
+                    f"{message_id.decode(errors='replace')}..."
+                )
+
                 status, msg_data = mail.fetch(
                     message_id,
                     "(RFC822)"
                 )
 
+                print(
+                    f"IMAP: письмо получено, "
+                    f"status={status}"
+                )
+
                 if status != "OK":
+
+                    print(
+                        "IMAP: fetch завершился "
+                        "с ошибкой."
+                    )
+
                     continue
 
-                raw_email = msg_data[0][1]
+                if not msg_data:
+                    continue
+
+                raw_email = None
+
+                for part in msg_data:
+
+                    if (
+                        isinstance(part, tuple)
+                        and len(part) >= 2
+                    ):
+
+                        raw_email = part[1]
+                        break
+
+                if not raw_email:
+                    continue
 
                 message = BytesParser(
                     policy=policy.default
@@ -1913,7 +1922,10 @@ def process_incoming_answers(
                 )
 
                 sender = parseaddr(
-                    message.get("From", "")
+                    message.get(
+                        "From",
+                        ""
+                    )
                 )[1].strip().lower()
 
                 subject = decode_mime_header(
@@ -1937,19 +1949,29 @@ def process_incoming_answers(
                     combined
                 )
 
+                print(
+                    f"IMAP: отправитель={sender}"
+                )
+
+                print(
+                    f"IMAP: BOTON-ID="
+                    f"{bot_id or 'не найден'}"
+                )
+
                 if not bot_id:
-                    # Не наше письмо.
-                    # Помечаем прочитанным, чтобы
-                    # не обрабатывать снова.
+
+                    # Чужое письмо.
+                    # Помечаем прочитанным.
                     mail.store(
                         message_id,
                         "+FLAGS",
                         "\\Seen"
                     )
+
                     continue
 
                 # ------------------------------------------------
-                # Врач определяется по email отправителя.
+                # Врач по email
                 # ------------------------------------------------
 
                 doctor = None
@@ -1971,8 +1993,8 @@ def process_incoming_answers(
                 if not doctor:
 
                     print(
-                        f"Ответ от неизвестного email: "
-                        f"{sender}"
+                        f"Ответ от неизвестного "
+                        f"email: {sender}"
                     )
 
                     mail.store(
@@ -1984,8 +2006,7 @@ def process_incoming_answers(
                     continue
 
                 # ------------------------------------------------
-                # Из BOTON-ID получаем дату.
-                # BOTON-20261008-...
+                # Дата из BOTON-ID
                 # ------------------------------------------------
 
                 date_match = re.search(
@@ -2009,16 +2030,32 @@ def process_incoming_answers(
 
                     continue
 
-                target_date = datetime.strptime(
-                    date_match.group(1),
-                    "%Y%m%d"
-                ).date()
+                try:
+
+                    target_date = (
+                        datetime.strptime(
+                            date_match.group(1),
+                            "%Y%m%d"
+                        ).date()
+                    )
+
+                except ValueError:
+
+                    print(
+                        f"Неверная дата в BOTON-ID: "
+                        f"{bot_id}"
+                    )
+
+                    mail.store(
+                        message_id,
+                        "+FLAGS",
+                        "\\Seen"
+                    )
+
+                    continue
 
                 # ------------------------------------------------
-                # Восстанавливаем пациентов и задания
-                # именно для этой даты и этого врача.
-                # include_processed=True важно:
-                # M уже заполнена после рассылки.
+                # Восстанавливаем задания врача
                 # ------------------------------------------------
 
                 patients = get_patients_for_doctor(
@@ -2031,8 +2068,8 @@ def process_incoming_answers(
                 if not patients:
 
                     print(
-                        f"Не найдены задания для "
-                        f"{doctor['name']} "
+                        f"Не найдены задания "
+                        f"для {doctor['name']} "
                         f"на {target_date}"
                     )
 
@@ -2059,19 +2096,23 @@ def process_incoming_answers(
                     print(
                         f"Ответ обработан: "
                         f"{doctor['name']} "
-                        f"| выполнено={statistics['done']} "
-                        f"| частично={statistics['partial']} "
-                        f"| не выполнено={statistics['not_done']}"
+                        f"| выполнено="
+                        f"{statistics['done']} "
+                        f"| частично="
+                        f"{statistics['partial']} "
+                        f"| не выполнено="
+                        f"{statistics['not_done']}"
                     )
 
                 else:
 
                     print(
-                        f"Ответ от {doctor['name']} "
-                        f"не содержит распознаваемых отметок."
+                        f"Ответ от "
+                        f"{doctor['name']} "
+                        f"не содержит "
+                        f"распознаваемых отметок."
                     )
 
-                # Помечаем письмо обработанным.
                 mail.store(
                     message_id,
                     "+FLAGS",
@@ -2084,21 +2125,26 @@ def process_incoming_answers(
 
                 print(
                     f"Ошибка обработки письма: "
+                    f"{type(error).__name__}: "
                     f"{error}"
                 )
 
-                # Чтобы одно битое письмо
-                # не блокировало всю очередь.
                 try:
+
                     mail.store(
                         message_id,
                         "+FLAGS",
                         "\\Seen"
                     )
+
                 except Exception:
                     pass
 
     finally:
+
+        print(
+            "IMAP: закрытие соединения..."
+        )
 
         try:
             mail.close()
@@ -2109,6 +2155,10 @@ def process_incoming_answers(
             mail.logout()
         except Exception:
             pass
+
+        print(
+            "IMAP: соединение закрыто."
+        )
 
     return {
         "processed": processed,
@@ -2137,7 +2187,6 @@ def calculate_report(
 
     answered_doctors = set()
 
-    # Пациенты группируем отдельно по врачу.
     for doctor in doctors_map.values():
 
         patients = get_patients_for_doctor(
@@ -2161,7 +2210,6 @@ def calculate_report(
             "done": 0,
             "partial": 0,
             "not_done": 0,
-            "no_answer": 0,
         }
 
         for patient in patients:
@@ -2170,25 +2218,18 @@ def calculate_report(
                 patient["tasks"]
             )
 
-            for task in patient["tasks"]:
-
-                status = ""
-
-                # Статус находится в конкретной
-                # ячейке H/J/L. Из rows его здесь
-                # не восстанавливаем напрямую.
-                #
-                # Поэтому статистика ниже строится
-                # по содержимому status cells,
-                # которое передаётся отдельным проходом.
-                _ = task
-
         doctor_stats[doctor_key] = stat
 
-        total_patients += len(patients)
+        total_patients += len(
+            patients
+        )
+
         total_tasks += stat["tasks"]
 
-    # Второй проход по таблице для подсчёта H/J/L.
+    # --------------------------------------------------------
+    # Второй проход по H/J/L
+    # --------------------------------------------------------
+
     for row in rows:
 
         row_date = parse_date(
@@ -2254,6 +2295,7 @@ def calculate_report(
                 continue
 
             if status.startswith("✅"):
+
                 doctor_stats[
                     doctor_key
                 ]["done"] += 1
@@ -2265,6 +2307,7 @@ def calculate_report(
                 )
 
             elif status.startswith("⚠️"):
+
                 doctor_stats[
                     doctor_key
                 ]["partial"] += 1
@@ -2276,6 +2319,7 @@ def calculate_report(
                 )
 
             elif status.startswith("❌"):
+
                 doctor_stats[
                     doctor_key
                 ]["not_done"] += 1
@@ -2300,7 +2344,7 @@ def calculate_report(
 
 
 # ============================================================
-# ОТЧЁТ ЗАВЕДУЮЩЕМУ
+# ОТЧЁТ
 # ============================================================
 
 def build_report(
@@ -2315,7 +2359,9 @@ def build_report(
     )
 
     lines.append(
-        target_date.strftime("%d.%m.%Y")
+        target_date.strftime(
+            "%d.%m.%Y"
+        )
     )
 
     lines.append("")
@@ -2349,15 +2395,18 @@ def build_report(
     lines.append("")
 
     lines.append(
-        f"Выполнено: {report['done']}"
+        f"Выполнено: "
+        f"{report['done']}"
     )
 
     lines.append(
-        f"Частично: {report['partial']}"
+        f"Частично: "
+        f"{report['partial']}"
     )
 
     lines.append(
-        f"Не выполнено: {report['not_done']}"
+        f"Не выполнено: "
+        f"{report['not_done']}"
     )
 
     lines.append("")
@@ -2381,15 +2430,18 @@ def build_report(
         )
 
         lines.append(
-            f"✅ Выполнено: {stat['done']}"
+            f"✅ Выполнено: "
+            f"{stat['done']}"
         )
 
         lines.append(
-            f"⚠️ Частично: {stat['partial']}"
+            f"⚠️ Частично: "
+            f"{stat['partial']}"
         )
 
         lines.append(
-            f"❌ Не выполнено: {stat['not_done']}"
+            f"❌ Не выполнено: "
+            f"{stat['not_done']}"
         )
 
     lines.append("")
@@ -2441,7 +2493,7 @@ def send_report(report_text):
 
 
 # ============================================================
-# ОСНОВНОЙ ЗАПУСК
+# MAIN
 # ============================================================
 
 def main():
@@ -2491,10 +2543,7 @@ def main():
     target_date = today_moscow()
 
     # --------------------------------------------------------
-    # Сначала принимаем ответы.
-    # Это важно: если врач ответил между
-    # запусками GitHub Actions, ответ будет
-    # обработан до следующей рассылки.
+    # Входящие ответы
     # --------------------------------------------------------
 
     incoming = process_incoming_answers(
@@ -2508,8 +2557,15 @@ def main():
         f"{incoming['processed']}"
     )
 
+    if incoming["errors"]:
+
+        print(
+            f"Ошибок входящих писем: "
+            f"{incoming['errors']}"
+        )
+
     # --------------------------------------------------------
-    # Затем отправляем новые задания.
+    # Рассылка
     # --------------------------------------------------------
 
     if not TEST_RECEIVE_ONLY:
@@ -2526,14 +2582,16 @@ def main():
         )
 
     # --------------------------------------------------------
-    # Итоговая диагностика
+    # Итог
     # --------------------------------------------------------
 
     print(
         "\n----- ИТОГОВАЯ СТАТИСТИКА -----"
     )
 
-    rows_after = tasks_sheet.get_all_values()
+    rows_after = (
+        tasks_sheet.get_all_values()
+    )
 
     report = calculate_report(
         rows_after,
