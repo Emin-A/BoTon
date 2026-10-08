@@ -54,7 +54,7 @@ LOG_SHEET_NAME = "BoTon_Log"
 TEST_MODE = False
 TEST_RECEIVE_ONLY = False  # ← ЭТА СТРОКА ОТСУТСТВОВАЛА
 TEST_ROUTE_TO_BACKUP = True
-FORCE_RESEND = False
+FORCE_RESEND = True
 
 REPORT_EMAIL = "eagaverdiev@mosmedzdrav.ru"
 
