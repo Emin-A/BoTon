@@ -830,4 +830,259 @@ def expand_status_items(text, mapping):
     return result
 
 
-STATUS_PRIORITY = {"": 0, "
+STATUS_PRIORITY = {"": 0, "⏳ Нет ответа": 1, "✅ Выполнено": 2, "⚠️ Частично": 3, "❌ Не выполнено": 4}
+
+
+def collect_status_update(updates, current_values, row_number, status_col, new_status):
+    sheet_col = status_col + 1
+    current = ""
+    if row_number >= 1 and row_number - 1 < len(current_values):
+        row = current_values[row_number - 1]
+        if sheet_col - 1 < len(row):
+            current = str(row[sheet_col - 1] or "").strip()
+
+    old_priority = STATUS_PRIORITY.get(current, 0)
+    new_priority = STATUS_PRIORITY.get(new_status, 0)
+    if new_priority < old_priority:
+        return
+
+    key = (row_number, sheet_col)
+    old_update = updates.get(key)
+    if old_update:
+        old_priority_2 = STATUS_PRIORITY.get(old_update, 0)
+        if old_priority_2 >= new_priority:
+            return
+    updates[key] = new_status
+
+
+def process_incoming_messages(tasks_sheet, log_sheet, doctors):
+    print("\n----- ПРОВЕРКА ВХОДЯЩИХ ОТВЕТОВ -----")
+    host = os.environ.get("IMAP_HOST", "imap.yandex.ru")
+    port = int(os.environ.get("IMAP_PORT", "993"))
+    username = os.environ.get("IMAP_USER", "")
+    password = os.environ.get("IMAP_PASSWORD", "")
+
+    doctor_emails = [normalize_email(doctor["email"]) for doctor in doctors if doctor["email"]]
+    mail = None
+    processed = 0
+
+    try:
+        print(f"IMAP: подключение к {host}:{port}...")
+        mail = imaplib.IMAP4_SSL(host, port, timeout=IMAP_TIMEOUT)
+        mail.login(username, password)
+        status, _ = mail.select("INBOX", readonly=True)
+        if status != "OK":
+            print("IMAP: не удалось открыть INBOX")
+            return 0
+
+        records = load_log_records(log_sheet)
+        candidates = search_doctor_messages(mail, doctor_emails)
+        current_values = sheets_call(lambda: tasks_sheet.get_all_values(), "чтение Лист1 перед обработкой ответов")
+
+        status_updates = {}
+        receive_logs = []
+        receive_records = []
+
+        for message_number, expected_email in candidates:
+            try:
+                status, data = mail.fetch(message_number, "(BODY.PEEK[])")
+                if status != "OK" or not data:
+                    continue
+
+                raw_message = None
+                for item in data:
+                    if isinstance(item, tuple):
+                        raw_message = item[1]
+                        break
+                if not raw_message:
+                    continue
+
+                message = email.message_from_bytes(raw_message)
+                message_id = (message.get("Message-ID", "") or "").strip()
+
+                if is_message_processed(records, message_id):
+                    continue
+
+                from_header = decode_mime_header(message.get("From", ""))
+                subject = decode_mime_header(message.get("Subject", ""))
+                body = extract_message_body(message)
+
+                from_match = re.search(r"<([^>]+)>", from_header)
+                sender_email = normalize_email(from_match.group(1) if from_match else from_header)
+
+                if sender_email != expected_email:
+                    continue
+
+                doctor = next((item for item in doctors if normalize_email(item["email"]) == sender_email), None)
+                if not doctor:
+                    continue
+
+                bot_id = extract_bot_id(subject, body)
+                if not bot_id:
+                    continue
+
+                log_record = find_log_by_bot_id(records, bot_id)
+                if not log_record:
+                    continue
+
+                try:
+                    mapping = json.loads(log_record["mapping_json"] or "{}")
+                except Exception:
+                    mapping = {}
+                if not mapping:
+                    continue
+
+                text_for_status = f"{subject}\n{body}"
+                status_value = parse_status(text_for_status)
+                if not status_value:
+                    continue
+
+                keys = expand_status_items(text_for_status, mapping)
+                if not keys:
+                    continue
+
+                updated = []
+                for key in keys:
+                    for item in mapping.get(key, []):
+                        collect_status_update(status_updates, current_values, item["row_number"], item["status_col"], status_value)
+                        updated.append({
+                            "key": key, "row": item["row_number"], "status_col": item["status_col"],
+                            "title": item["title"], "status": status_value,
+                        })
+
+                receive_logs.append({
+                    "event": "RECEIVE", "bot_id": bot_id, "target_date": log_record["date"],
+                    "doctor": doctor["name"], "email_address": sender_email, "mapping": mapping,
+                    "message_id": message_id, "result": "PROCESSED",
+                    "notes": json.dumps(updated, ensure_ascii=False),
+                })
+                receive_records.append({
+                    "timestamp": now_moscow().strftime("%d.%m.%Y %H:%M:%S"), "event": "RECEIVE",
+                    "bot_id": bot_id, "date": log_record["date"], "doctor": doctor["name"],
+                    "email": sender_email, "mapping_json": json.dumps(mapping, ensure_ascii=False),
+                    "message_id": message_id, "result": "PROCESSED",
+                    "notes": json.dumps(updated, ensure_ascii=False),
+                })
+                processed += 1
+                print(f"Ответ подготовлен: {doctor['name']} [{bot_id}]")
+
+            except Exception as exc:
+                print(f"IMAP: ошибка обработки сообщения: {exc}")
+
+        if status_updates:
+            updates = [{"row": rn, "col": sc, "value": val} for (rn, sc), val in status_updates.items()]
+            print(f"Лист1: пакетная запись статусов ({len(updates)} ячеек)")
+            batch_update_cells(tasks_sheet, updates, "пакетная запись H/J/L")
+
+        if receive_logs:
+            print(f"BoTon_Log: пакетная запись RECEIVE ({len(receive_logs)})")
+            append_log_entries(log_sheet, receive_logs)
+            records.extend(receive_records)
+
+        return processed
+
+    except Exception as exc:
+        print(f"IMAP ERROR: {exc}")
+        return processed
+    finally:
+        if mail is not None:
+            try:
+                mail.close()
+                mail.logout()
+            except Exception:
+                pass
+
+
+# ============================================================
+# REPORT TO HEAD OF DEPARTMENT (PLAIN TEXT)
+# ============================================================
+
+def send_summary_report(target_date, send_stats, received_count):
+    print("\n----- ФОРМИРОВАНИЕ И ОТПРАВКА ОТЧЕТА -----")
+    resend_mark = " (ПОВТОРНАЯ ОТПРАВКА)" if FORCE_RESEND else ""
+    test_mark = " (ТЕСТОВЫЙ ПРОГОН НА РЕЗЕРВ)" if TEST_TO_RESERVE else ""
+    
+    text_body = (
+        f"ОТЧЕТ СИСТЕМЫ BoTon v{VERSION}{resend_mark}{test_mark}\n"
+        f"Дата формирования: {target_date.strftime('%d.%m.%Y %H:%M')}\n"
+        f"{'='*45}\n\n"
+        f"СТАТИСТИКА РАССЫЛКИ:\n"
+        f"  - Врачей обработано: ........... {send_stats['doctors']}\n"
+        f"  - Успешно отправлено: .......... {send_stats['doctors'] - send_stats['errors']}\n"
+    )
+    
+    if TEST_TO_RESERVE:
+        text_body += f"  - Тестовых отправлений на резерв: {send_stats['doctors']}\n"
+    else:
+        text_body += f"  - Отправлено на резерв (нет email): {send_stats['reserve']}\n"
+    
+    text_body += (
+        f"  - Ошибок отправки: ............. {send_stats['errors']}\n"
+        f"  - Строк обновлено в таблице (M): {send_stats['rows']}\n"
+        f"  - Всего заданий в рассылке: .... {send_stats['tasks']}\n\n"
+        f"ВХОДЯЩИЕ ОТВЕТЫ:\n"
+        f"  - Получено и обработано ответов: {received_count}\n\n"
+        f"{'='*45}\n"
+        f"Система работает автоматически.\n"
+        f"При возникновении вопросов обращайтесь к администратору."
+    )
+    
+    subject = f"[ОТЧЕТ BoTon] Рассылка и ответы за {target_date.strftime('%d.%m.%Y')}{resend_mark}{test_mark}"
+    
+    try:
+        send_email(REPORT_EMAIL, subject, text_body)
+        print(f"ОТЧЕТ УСПЕШНО ОТПРАВЛЕН на {REPORT_EMAIL}")
+    except Exception as exc:
+        print(f"ОШИБКА ОТПРАВКИ ОТЧЕТА: {exc}")
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+    print(f"BOTON v{VERSION}")
+    print(f"TEST_MODE = {TEST_MODE}")
+    print(f"TEST_RECEIVE_ONLY = {TEST_RECEIVE_ONLY}")
+    print(f"TEST_TO_RESERVE = {TEST_TO_RESERVE}")
+    print(f"FORCE_RESEND = {FORCE_RESEND}")
+
+    target_date = now_moscow().date()
+    print(f"Дата: {target_date.strftime('%d.%m.%Y')}")
+    print(f"Текущее время МСК: {now_moscow().strftime('%d.%m.%Y %H:%M:%S')}")
+
+    tasks_sheet, doctors_sheet, tasks_book = open_sheet()
+    log_sheet = ensure_log_sheet(tasks_book)
+    doctors = load_doctors(doctors_sheet)
+
+    rows, stats = load_task_rows(tasks_sheet, target_date)
+    print(f"Подошло для обработки: {len(rows)} строк")
+
+    received = process_incoming_messages(tasks_sheet, log_sheet, doctors)
+    print(f"Обработано входящих ответов: {received}")
+
+    send_stats = {"doctors": 0, "rows": 0, "tasks": 0, "errors": 0, "skipped": 0, "reserve": 0}
+    
+    if not TEST_RECEIVE_ONLY:
+        if is_assignment_time() or FORCE_RESEND or TEST_TO_RESERVE:
+            if TEST_TO_RESERVE:
+                print("\n----- ТЕСТОВЫЙ ПРОГОН: ОТПРАВКА НА РЕЗЕРВ -----")
+                print("Все письма врачей будут отправлены на", REPORT_EMAIL)
+            elif FORCE_RESEND:
+                print("\n----- ПРИНУДИТЕЛЬНАЯ РАССЫЛКА (FORCE_RESEND) -----")
+            else:
+                print("\n----- РАССЫЛКА -----")
+                print("Рассылка разрешена: 08:00–12:00 МСК")
+            
+            send_stats = send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date)
+        else:
+            print("\n----- РАССЫЛКА НЕ ВЫПОЛНЯЕТСЯ -----")
+            print("Рассылка заданий разрешена только с 08:00 до 12:00 МСК.")
+
+    send_summary_report(target_date, send_stats, received)
+
+    print(f"\nBOTON v{VERSION} завершён успешно.")
+
+
+if __name__ == "__main__":
+    main()
