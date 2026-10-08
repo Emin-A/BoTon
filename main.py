@@ -665,9 +665,8 @@ def main():
     target_date = now_moscow().date()
     print(f"Дата: {target_date.strftime('%d.%m.%Y')} | Время МСК: {now_moscow().strftime('%H:%M:%S')}")
 
-    tasks_sheet, doctors_sheet, tasks_book = open_sheet()
-    log_sheet = ensure_log_sheet(tasks_book)
-    doctors = load_doctors(doctors_sheet)
+    target_date = now_moscow().date()
+    tasks_sheet, doctors_sheet, tasks_book = open_sheet(target_date)
 
     rows, stats = load_task_rows(tasks_sheet, target_date)
     received = process_incoming_messages(tasks_sheet, log_sheet, doctors)
