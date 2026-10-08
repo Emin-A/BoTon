@@ -42,10 +42,10 @@ DOCTORS_SHEET_NAME = "Врачи"
 LOG_SHEET_NAME = "BoTon_Log"
 
 # УПРАВЛЕНИЕ РАССЫЛКОЙ
-FORCE_RESEND = False  # True = принудительно отправить всё заново (игнорирует журнал и время)
+FORCE_RESEND = True  # True = принудительно отправить всё заново (игнорирует журнал и время)
 TEST_MODE = False  # True = отправить одно тестовое письмо со статистикой
 TEST_RECEIVE_ONLY = False  # True = только принимать ответы, не рассылать
-TEST_TO_RESERVE = True  # True = отправить реальные письма врачам на REPORT_EMAIL (для проверки)
+TEST_TO_RESERVE = False  # True = отправить реальные письма врачам на REPORT_EMAIL (для проверки)
 
 REPORT_EMAIL = "eagaverdiev@mosmedzdrav.ru"  # Почта заведующего и резервная почта
 
