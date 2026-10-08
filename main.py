@@ -1,12 +1,15 @@
 # ============================================================
-# BoTon v2.3
+# BoTon v2.4
 # Рассылка заданий + приём ответов врачей + запись H/J/L
 # + точная привязка ответа к отправленному заданию
 # + защищённый IMAP без STORE/UNSEEN
 # + журнал BoTon_Log
 # + рассылка заданий только 08:00–12:00 МСК
+# + защита от Google Sheets 429
+# + пакетная запись M / H-J-L / BoTon_Log
+# + детерминированный BOTON-ID для защиты от повторной рассылки
 #
-# VERSION: 2.3
+# VERSION: 2.4
 # ============================================================
 
 import os
@@ -14,7 +17,7 @@ import re
 import json
 import ssl
 import smtplib
-import secrets
+import hashlib
 import imaplib
 import email
 from email.header import decode_header
@@ -22,6 +25,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from collections import defaultdict
 from datetime import datetime, timedelta, time
+from time import sleep
 from zoneinfo import ZoneInfo
 
 import gspread
@@ -32,7 +36,7 @@ from google.oauth2.service_account import Credentials
 # CONFIG
 # ============================================================
 
-VERSION = "2.3"
+VERSION = "2.4"
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
@@ -52,15 +56,73 @@ LOG_SHEET_NAME = "BoTon_Log"
 
 
 # ============================================================
+# GOOGLE SHEETS RETRY
+# ============================================================
+
+SHEETS_RETRY_ATTEMPTS = 5
+SHEETS_RETRY_BASE_SECONDS = 1.5
+
+
+def sheets_call(operation, description="Google Sheets"):
+    """
+    Выполняет операцию Google Sheets с повтором при 429/5xx.
+    Это защищает BOTON от временного превышения лимита записи.
+    """
+
+    last_error = None
+
+    for attempt in range(1, SHEETS_RETRY_ATTEMPTS + 1):
+
+        try:
+            return operation()
+
+        except Exception as exc:
+
+            last_error = exc
+            text = str(exc).lower()
+
+            retryable = (
+                "429" in text
+                or "quota exceeded" in text
+                or "rate limit" in text
+                or "500" in text
+                or "502" in text
+                or "503" in text
+                or "504" in text
+                or "backend error" in text
+                or "service unavailable" in text
+            )
+
+            if not retryable:
+                raise
+
+            if attempt >= SHEETS_RETRY_ATTEMPTS:
+                raise
+
+            delay = (
+                SHEETS_RETRY_BASE_SECONDS
+                * (2 ** (attempt - 1))
+            )
+
+            print(
+                f"Google Sheets: временная ошибка "
+                f"({exc}). Повтор {attempt}/"
+                f"{SHEETS_RETRY_ATTEMPTS} через "
+                f"{delay:.1f} сек."
+            )
+
+            sleep(delay)
+
+    raise last_error
+
+
+# ============================================================
 # IMAP
 # ============================================================
 
 IMAP_TIMEOUT = 20
-
 IMAP_LOOKBACK_DAYS = 3
-
 IMAP_MAX_PER_DOCTOR = 20
-
 IMAP_MAX_TOTAL = 100
 
 
@@ -69,7 +131,6 @@ IMAP_MAX_TOTAL = 100
 # ============================================================
 
 TEST_MODE = False
-
 TEST_RECEIVE_ONLY = False
 
 
@@ -140,6 +201,7 @@ def is_assignment_time():
 # ============================================================
 
 def normalize_text(value):
+
     if value is None:
         return ""
 
@@ -147,7 +209,6 @@ def normalize_text(value):
 
     value = value.replace("Ё", "Е")
     value = value.replace("ё", "е")
-
     value = value.replace("\xa0", " ")
 
     value = re.sub(
@@ -274,21 +335,27 @@ def ensure_log_sheet(tasks_book):
             "Google Sheets: создаю лист BoTon_Log"
         )
 
-        log_sheet = tasks_book.add_worksheet(
-            title=LOG_SHEET_NAME,
-            rows=1000,
-            cols=len(LOG_HEADERS),
+        log_sheet = sheets_call(
+            lambda: tasks_book.add_worksheet(
+                title=LOG_SHEET_NAME,
+                rows=1000,
+                cols=len(LOG_HEADERS),
+            ),
+            "создание BoTon_Log",
         )
 
-        log_sheet.append_row(
-            LOG_HEADERS
+        sheets_call(
+            lambda: log_sheet.append_row(
+                LOG_HEADERS,
+                value_input_option="USER_ENTERED",
+            ),
+            "запись заголовков BoTon_Log",
         )
 
         return log_sheet
 
 
-def append_log(
-    log_sheet,
+def make_log_row(
     event,
     bot_id="",
     target_date="",
@@ -300,7 +367,7 @@ def append_log(
     notes="",
 ):
 
-    row = [
+    return [
         now_moscow().strftime(
             "%d.%m.%Y %H:%M:%S"
         ),
@@ -318,9 +385,102 @@ def append_log(
         notes,
     ]
 
-    log_sheet.append_row(
-        row,
-        value_input_option="USER_ENTERED",
+
+def append_log_entries(
+    log_sheet,
+    entries,
+):
+
+    if not entries:
+        return
+
+    rows = []
+
+    for entry in entries:
+
+        if isinstance(entry, dict):
+
+            rows.append(
+                make_log_row(
+                    event=entry.get(
+                        "event",
+                        "",
+                    ),
+                    bot_id=entry.get(
+                        "bot_id",
+                        "",
+                    ),
+                    target_date=entry.get(
+                        "target_date",
+                        "",
+                    ),
+                    doctor=entry.get(
+                        "doctor",
+                        "",
+                    ),
+                    email_address=entry.get(
+                        "email_address",
+                        "",
+                    ),
+                    mapping=entry.get(
+                        "mapping",
+                        {},
+                    ),
+                    message_id=entry.get(
+                        "message_id",
+                        "",
+                    ),
+                    result=entry.get(
+                        "result",
+                        "",
+                    ),
+                    notes=entry.get(
+                        "notes",
+                        "",
+                    ),
+                )
+            )
+
+        else:
+            rows.append(entry)
+
+    sheets_call(
+        lambda: log_sheet.append_rows(
+            rows,
+            value_input_option="USER_ENTERED",
+        ),
+        "пакетная запись BoTon_Log",
+    )
+
+
+def append_log(
+    log_sheet,
+    event,
+    bot_id="",
+    target_date="",
+    doctor="",
+    email_address="",
+    mapping=None,
+    message_id="",
+    result="",
+    notes="",
+):
+
+    append_log_entries(
+        log_sheet,
+        [
+            {
+                "event": event,
+                "bot_id": bot_id,
+                "target_date": target_date,
+                "doctor": doctor,
+                "email_address": email_address,
+                "mapping": mapping or {},
+                "message_id": message_id,
+                "result": result,
+                "notes": notes,
+            }
+        ],
     )
 
 
@@ -556,21 +716,9 @@ def get_task_from_row(
     tasks = []
 
     columns = [
-        (
-            6,
-            7,
-            1,
-        ),
-        (
-            8,
-            9,
-            2,
-        ),
-        (
-            10,
-            11,
-            3,
-        ),
+        (6, 7, 1),
+        (8, 9, 2),
+        (10, 11, 3),
     ]
 
     for task_col, status_col, task_number in columns:
@@ -770,17 +918,50 @@ def build_patients(rows):
 def make_bot_id(
     target_date,
     doctor,
+    doctor_rows,
 ):
+    """
+    Детерминированный ID.
 
-    token = secrets.token_hex(
-        2
-    ).upper()
+    В отличие от v2.3 здесь нет случайного token.
+    Поэтому повторный запуск в тот же день для того же
+    набора строк получает тот же BOTON-ID.
+
+    Это позволяет использовать BoTon_Log как защиту
+    от повторной отправки после падения GitHub Actions.
+    """
+
+    parts = []
+
+    for row in sorted(
+        doctor_rows,
+        key=lambda item: item["row_number"],
+    ):
+
+        task_numbers = ",".join(
+            str(task["task_number"])
+            for task in row["tasks"]
+        )
+
+        parts.append(
+            f"{row['row_number']}:{task_numbers}"
+        )
+
+    signature = (
+        f"{target_date.strftime('%Y%m%d')}"
+        f"|{make_doctor_key(doctor)}"
+        f"|{'/'.join(parts)}"
+    )
+
+    digest = hashlib.sha256(
+        signature.encode("utf-8")
+    ).hexdigest()[:10].upper()
 
     return (
         f"BOTON-"
         f"{target_date.strftime('%Y%m%d')}-"
         f"{make_doctor_key(doctor)}-"
-        f"{token}"
+        f"{digest}"
     )
 
 
@@ -1024,9 +1205,7 @@ def send_email(
     message = MIMEMultipart()
 
     message["From"] = from_email
-
     message["To"] = recipient
-
     message["Subject"] = subject
 
     message.attach(
@@ -1059,8 +1238,60 @@ def send_email(
 
 
 # ============================================================
-# UPDATE COLUMN M
+# BATCH UPDATE HELPERS
 # ============================================================
+
+def batch_update_cells(
+    sheet,
+    updates,
+    description="пакетное обновление Google Sheets",
+):
+    """
+    updates:
+        [
+            {
+                "row": 10,
+                "col": 13,
+                "value": "..."
+            },
+            ...
+        ]
+
+    Все изменения отправляются одним values.batchUpdate,
+    а не отдельным update_cell().
+    """
+
+    if not updates:
+        return
+
+    data = []
+
+    for item in updates:
+
+        row = int(item["row"])
+        col = int(item["col"])
+        value = item.get("value", "")
+
+        start = gspread.utils.rowcol_to_a1(
+            row,
+            col,
+        )
+
+        data.append(
+            {
+                "range": f"{start}:{start}",
+                "values": [[value]],
+            }
+        )
+
+    sheets_call(
+        lambda: sheet.batch_update(
+            data,
+            value_input_option="USER_ENTERED",
+        ),
+        description,
+    )
+
 
 def mark_rows_sent(
     tasks_sheet,
@@ -1077,12 +1308,236 @@ def mark_rows_sent(
         f"[{bot_id}]"
     )
 
-    for row_number in row_numbers:
+    updates = []
 
-        tasks_sheet.update_cell(
-            row_number,
-            13,
-            value,
+    for row_number in sorted(
+        set(row_numbers)
+    ):
+
+        updates.append(
+            {
+                "row": row_number,
+                "col": 13,
+                "value": value,
+            }
+        )
+
+    batch_update_cells(
+        tasks_sheet,
+        updates,
+        "пакетная запись статусов отправки в M",
+    )
+
+
+# ============================================================
+# LOG LOOKUP
+# ============================================================
+
+def load_log_records(
+    log_sheet,
+):
+
+    values = log_sheet.get_all_values()
+
+    records = []
+
+    for row in values[1:]:
+
+        while len(row) < 10:
+            row.append("")
+
+        records.append(
+            {
+                "timestamp": row[0],
+                "event": row[1],
+                "bot_id": row[2],
+                "date": row[3],
+                "doctor": row[4],
+                "email": row[5],
+                "mapping_json": row[6],
+                "message_id": row[7],
+                "result": row[8],
+                "notes": row[9],
+            }
+        )
+
+    return records
+
+
+def get_assignment_log_state(
+    records,
+    bot_id,
+):
+    """
+    Возвращает последнее состояние конкретного BOTON-ID.
+
+    Возможные состояния:
+    SENT
+    PENDING
+    ERROR
+    ""
+    """
+
+    for record in reversed(records):
+
+        if (
+            record["event"] == "SEND"
+            and record["bot_id"] == bot_id
+        ):
+
+            return record["result"]
+
+    return ""
+
+
+def find_log_by_bot_id(
+    records,
+    bot_id,
+):
+
+    for record in reversed(records):
+
+        if (
+            record["bot_id"]
+            == bot_id
+            and record["event"]
+            == "SEND"
+            and record["result"]
+            == "SENT"
+        ):
+
+            return record
+
+    return None
+
+
+def is_message_processed(
+    records,
+    message_id,
+):
+
+    if not message_id:
+        return False
+
+    for record in records:
+
+        if (
+            record["event"]
+            == "RECEIVE"
+            and record["message_id"]
+            == message_id
+        ):
+
+            return True
+
+    return False
+
+
+# ============================================================
+# RECONCILE SENT -> COLUMN M
+# ============================================================
+
+def reconcile_sent_rows(
+    tasks_sheet,
+    records,
+):
+    """
+    Если письмо уже было отправлено и запись SENT попала
+    в BoTon_Log, но GitHub Actions упал до записи M,
+    восстанавливаем M по журналу.
+
+    Это позволяет безопасно пережить падение между
+    отправкой письма и записью Google Sheets.
+    """
+
+    sheet_values = sheets_call(
+        lambda: tasks_sheet.get_all_values(),
+        "чтение Лист1 для восстановления M",
+    )
+
+    current_m = {}
+
+    for row_number, row in enumerate(
+        sheet_values[1:],
+        start=2,
+    ):
+
+        current_m[row_number] = (
+            str(row[12]).strip()
+            if len(row) > 12
+            else ""
+        )
+
+    updates = []
+
+    seen_rows = set()
+
+    for record in records:
+
+        if (
+            record["event"] != "SEND"
+            or record["result"] != "SENT"
+            or not record["mapping_json"]
+        ):
+            continue
+
+        try:
+            mapping = json.loads(
+                record["mapping_json"]
+            )
+        except Exception:
+            continue
+
+        bot_id = record["bot_id"]
+
+        if not bot_id:
+            continue
+
+        timestamp = record["timestamp"]
+
+        value = (
+            f"Отправлено {timestamp} "
+            f"[{bot_id}]"
+        )
+
+        for items in mapping.values():
+
+            for item in items:
+
+                row_number = int(
+                    item["row_number"]
+                )
+
+                if row_number in seen_rows:
+                    continue
+
+                seen_rows.add(row_number)
+
+                if current_m.get(
+                    row_number,
+                    "",
+                ):
+                    continue
+
+                updates.append(
+                    {
+                        "row": row_number,
+                        "col": 13,
+                        "value": value,
+                    }
+                )
+
+    if updates:
+
+        print(
+            "Восстановление M по BoTon_Log: "
+            f"{len(updates)} строк"
+        )
+
+        batch_update_cells(
+            tasks_sheet,
+            updates,
+            "восстановление M по SENT",
         )
 
 
@@ -1103,14 +1558,34 @@ def send_today_assignments(
     )
 
     successful_doctors = 0
-
     successful_rows = 0
-
     total_tasks = 0
-
     reserve_count = 0
-
     errors = 0
+    skipped_logged = 0
+
+    # --------------------------------------------------------
+    # Загружаем журнал один раз.
+    # --------------------------------------------------------
+
+    records = load_log_records(
+        log_sheet
+    )
+
+    # --------------------------------------------------------
+    # Восстанавливаем M, если SENT уже есть в журнале.
+    # --------------------------------------------------------
+
+    reconcile_sent_rows(
+        tasks_sheet,
+        records,
+    )
+
+    # --------------------------------------------------------
+    # Сначала готовим все задания.
+    # --------------------------------------------------------
+
+    prepared = []
 
     for doctor_key, doctor_rows in grouped.items():
 
@@ -1145,12 +1620,41 @@ def send_today_assignments(
         bot_id = make_bot_id(
             target_date,
             doctor["name"],
+            doctor_rows,
         )
 
-        email_address = (
-            normalize_email(
-                doctor["email"]
+        state = get_assignment_log_state(
+            records,
+            bot_id,
+        )
+
+        if state == "SENT":
+
+            print(
+                f"Пропуск: BOTON-ID уже отправлен "
+                f"{bot_id}"
             )
+
+            skipped_logged += 1
+            continue
+
+        if state == "PENDING":
+
+            print(
+                f"Пропуск: BOTON-ID находится "
+                f"в состоянии PENDING: {bot_id}"
+            )
+
+            print(
+                "Повторно письмо автоматически "
+                "не отправляется, чтобы исключить дубль."
+            )
+
+            skipped_logged += 1
+            continue
+
+        email_address = normalize_email(
+            doctor["email"]
         )
 
         if not email_address:
@@ -1172,37 +1676,113 @@ def send_today_assignments(
             bot_id,
         )
 
-        append_log(
-            log_sheet,
-            event="SEND",
-            bot_id=bot_id,
-            target_date=target_date.strftime(
-                "%d.%m.%Y"
-            ),
-            doctor=doctor["name"],
-            email_address=email_address,
-            mapping=mapping,
-            result="PENDING",
+        prepared.append(
+            {
+                "doctor": doctor,
+                "doctor_rows": doctor_rows,
+                "patients": patients,
+                "mapping": mapping,
+                "bot_id": bot_id,
+                "email_address": email_address,
+                "subject": subject,
+                "body": body,
+                "target_date": target_date.strftime(
+                    "%d.%m.%Y"
+                ),
+            }
         )
+
+    # --------------------------------------------------------
+    # Критически важный этап:
+    # сначала одним запросом фиксируем PENDING.
+    #
+    # Если запись PENDING не прошла, письма НЕ отправляем.
+    # Это предотвращает ситуацию:
+    # письмо отправилось -> GitHub упал -> повторная рассылка.
+    # --------------------------------------------------------
+
+    pending_entries = []
+
+    for item in prepared:
+
+        pending_entries.append(
+            {
+                "event": "SEND",
+                "bot_id": item["bot_id"],
+                "target_date": item["target_date"],
+                "doctor": item["doctor"]["name"],
+                "email_address": item["email_address"],
+                "mapping": item["mapping"],
+                "result": "PENDING",
+            }
+        )
+
+    if pending_entries:
+
+        print(
+            "BoTon_Log: пакетная запись "
+            f"PENDING ({len(pending_entries)} врачей)"
+        )
+
+        append_log_entries(
+            log_sheet,
+            pending_entries,
+        )
+
+    # --------------------------------------------------------
+    # Теперь отправляем письма.
+    # --------------------------------------------------------
+
+    sent_log_entries = []
+    error_log_entries = []
+    m_updates = []
+
+    for item in prepared:
+
+        doctor = item["doctor"]
+        doctor_rows = item["doctor_rows"]
+        mapping = item["mapping"]
+        bot_id = item["bot_id"]
+        email_address = item["email_address"]
 
         try:
 
             send_email(
                 email_address,
-                subject,
-                body,
+                item["subject"],
+                item["body"],
             )
 
-            row_numbers = [
-                item["row_number"]
-                for item in doctor_rows
-            ]
-
-            mark_rows_sent(
-                tasks_sheet,
-                row_numbers,
-                bot_id,
+            sent_log_entries.append(
+                {
+                    "event": "SEND",
+                    "bot_id": bot_id,
+                    "target_date": item["target_date"],
+                    "doctor": doctor["name"],
+                    "email_address": email_address,
+                    "mapping": mapping,
+                    "result": "SENT",
+                }
             )
+
+            timestamp = now_moscow().strftime(
+                "%d.%m.%Y %H:%M:%S"
+            )
+
+            m_value = (
+                f"Отправлено {timestamp} "
+                f"[{bot_id}]"
+            )
+
+            for row in doctor_rows:
+
+                m_updates.append(
+                    {
+                        "row": row["row_number"],
+                        "col": 13,
+                        "value": m_value,
+                    }
+                )
 
             successful_doctors += 1
 
@@ -1211,23 +1791,8 @@ def send_today_assignments(
             )
 
             total_tasks += sum(
-                len(
-                    item["tasks"]
-                )
+                len(item["tasks"])
                 for item in doctor_rows
-            )
-
-            append_log(
-                log_sheet,
-                event="SEND",
-                bot_id=bot_id,
-                target_date=target_date.strftime(
-                    "%d.%m.%Y"
-                ),
-                doctor=doctor["name"],
-                email_address=email_address,
-                mapping=mapping,
-                result="SENT",
             )
 
             print(
@@ -1240,24 +1805,61 @@ def send_today_assignments(
 
             errors += 1
 
-            append_log(
-                log_sheet,
-                event="SEND",
-                bot_id=bot_id,
-                target_date=target_date.strftime(
-                    "%d.%m.%Y"
-                ),
-                doctor=doctor["name"],
-                email_address=email_address,
-                mapping=mapping,
-                result="ERROR",
-                notes=str(exc),
+            error_log_entries.append(
+                {
+                    "event": "SEND",
+                    "bot_id": bot_id,
+                    "target_date": item["target_date"],
+                    "doctor": doctor["name"],
+                    "email_address": email_address,
+                    "mapping": mapping,
+                    "result": "ERROR",
+                    "notes": str(exc),
+                }
             )
 
             print(
                 f"Ошибка отправки "
                 f"{doctor['name']}: {exc}"
             )
+
+    # --------------------------------------------------------
+    # Сначала фиксируем SENT/ERROR.
+    # --------------------------------------------------------
+
+    final_log_entries = (
+        sent_log_entries
+        + error_log_entries
+    )
+
+    if final_log_entries:
+
+        print(
+            "BoTon_Log: пакетная запись "
+            f"SENT/ERROR ({len(final_log_entries)})"
+        )
+
+        append_log_entries(
+            log_sheet,
+            final_log_entries,
+        )
+
+    # --------------------------------------------------------
+    # Затем одним запросом записываем M.
+    # --------------------------------------------------------
+
+    if m_updates:
+
+        print(
+            "Лист1: пакетная запись M "
+            f"({len(m_updates)} строк)"
+        )
+
+        batch_update_cells(
+            tasks_sheet,
+            m_updates,
+            "пакетная запись M после отправки",
+        )
 
     print("ИТОГ:")
 
@@ -1269,6 +1871,11 @@ def send_today_assignments(
     print(
         f"Успешно отправлено врачам: "
         f"{successful_doctors}"
+    )
+
+    print(
+        f"Пропущено по журналу: "
+        f"{skipped_logged}"
     )
 
     print(
@@ -1353,7 +1960,8 @@ def extract_message_body(
 
             if (
                 content_type == "text/plain"
-                and "attachment" not in disposition.lower()
+                and "attachment"
+                not in disposition.lower()
             ):
 
                 payload = part.get_payload(
@@ -1420,7 +2028,6 @@ def search_doctor_messages(
     )
 
     found = []
-
     seen = set()
 
     for email_address in doctor_emails:
@@ -1449,8 +2056,14 @@ def search_doctor_messages(
                 continue
 
             message_numbers = (
-                data[0]
-                .split()
+                data[0].split()
+            )
+
+            # Ограничение на одного врача.
+            message_numbers = (
+                message_numbers[
+                    -IMAP_MAX_PER_DOCTOR:
+                ]
             )
 
             for num in message_numbers:
@@ -1488,84 +2101,6 @@ def search_doctor_messages(
     )
 
     return found
-
-
-# ============================================================
-# LOG LOOKUP
-# ============================================================
-
-def load_log_records(
-    log_sheet,
-):
-
-    values = log_sheet.get_all_values()
-
-    records = []
-
-    for row in values[1:]:
-
-        while len(row) < 10:
-            row.append("")
-
-        records.append(
-            {
-                "timestamp": row[0],
-                "event": row[1],
-                "bot_id": row[2],
-                "date": row[3],
-                "doctor": row[4],
-                "email": row[5],
-                "mapping_json": row[6],
-                "message_id": row[7],
-                "result": row[8],
-                "notes": row[9],
-            }
-        )
-
-    return records
-
-
-def find_log_by_bot_id(
-    records,
-    bot_id,
-):
-
-    for record in reversed(records):
-
-        if (
-            record["bot_id"]
-            == bot_id
-            and record["event"]
-            == "SEND"
-            and record["result"]
-            == "SENT"
-        ):
-
-            return record
-
-    return None
-
-
-def is_message_processed(
-    records,
-    message_id,
-):
-
-    if not message_id:
-        return False
-
-    for record in records:
-
-        if (
-            record["event"]
-            == "RECEIVE"
-            and record["message_id"]
-            == message_id
-        ):
-
-            return True
-
-    return False
 
 
 # ============================================================
@@ -1646,8 +2181,6 @@ def expand_status_items(
         text
     )
 
-    # Выполнено: 2
-    # Выполнено: 2А
     pattern = re.compile(
         r"(?:выполнено|частично|"
         r"не\s+выполнено)"
@@ -1686,36 +2219,67 @@ STATUS_PRIORITY = {
 }
 
 
-def update_status_cell(
-    tasks_sheet,
+def collect_status_update(
+    updates,
+    current_values,
     row_number,
     status_col,
     new_status,
 ):
 
-    current = tasks_sheet.cell(
-        row_number,
-        status_col + 1,
-    ).value or ""
+    sheet_col = status_col + 1
 
-    current = str(current).strip()
+    current = ""
 
     if (
-        STATUS_PRIORITY.get(
-            new_status,
-            0,
-        )
-        >= STATUS_PRIORITY.get(
-            current,
-            0,
-        )
+        row_number >= 1
+        and row_number - 1 < len(current_values)
     ):
 
-        tasks_sheet.update_cell(
-            row_number,
-            status_col + 1,
-            new_status,
+        row = current_values[
+            row_number - 1
+        ]
+
+        if (
+            sheet_col - 1 < len(row)
+        ):
+
+            current = str(
+                row[sheet_col - 1]
+                or ""
+            ).strip()
+
+    old_priority = STATUS_PRIORITY.get(
+        current,
+        0,
+    )
+
+    new_priority = STATUS_PRIORITY.get(
+        new_status,
+        0,
+    )
+
+    if new_priority < old_priority:
+        return
+
+    key = (
+        row_number,
+        sheet_col,
+    )
+
+    old_update = updates.get(key)
+
+    if old_update:
+
+        old_priority_2 = STATUS_PRIORITY.get(
+            old_update,
+            0,
         )
+
+        if old_priority_2 >= new_priority:
+            return
+
+    updates[key] = new_status
 
 
 # ============================================================
@@ -1763,7 +2327,6 @@ def process_incoming_messages(
     ]
 
     mail = None
-
     processed = 0
 
     try:
@@ -1828,6 +2391,17 @@ def process_incoming_messages(
             doctor_emails,
         )
 
+        # Читаем Лист1 один раз для определения
+        # текущих статусов H/J/L.
+        current_values = sheets_call(
+            lambda: tasks_sheet.get_all_values(),
+            "чтение Лист1 перед обработкой ответов",
+        )
+
+        status_updates = {}
+        receive_logs = []
+        receive_records = []
+
         for message_number, expected_email in candidates:
 
             try:
@@ -1853,7 +2427,6 @@ def process_incoming_messages(
                     ):
 
                         raw_message = item[1]
-
                         break
 
                 if not raw_message:
@@ -1875,7 +2448,6 @@ def process_incoming_messages(
                     records,
                     message_id,
                 ):
-
                     continue
 
                 from_header = decode_mime_header(
@@ -1915,7 +2487,6 @@ def process_incoming_messages(
                     sender_email
                     != expected_email
                 ):
-
                     continue
 
                 doctor = None
@@ -1930,7 +2501,6 @@ def process_incoming_messages(
                     ):
 
                         doctor = item
-
                         break
 
                 if not doctor:
@@ -1996,14 +2566,11 @@ def process_incoming_messages(
                         [],
                     ):
 
-                        update_status_cell(
-                            tasks_sheet,
-                            item[
-                                "row_number"
-                            ],
-                            item[
-                                "status_col"
-                            ],
+                        collect_status_update(
+                            status_updates,
+                            current_values,
+                            item["row_number"],
+                            item["status_col"],
                             status_value,
                         )
 
@@ -2023,25 +2590,24 @@ def process_incoming_messages(
                             }
                         )
 
-                append_log(
-                    log_sheet,
-                    event="RECEIVE",
-                    bot_id=bot_id,
-                    target_date=log_record[
-                        "date"
-                    ],
-                    doctor=doctor["name"],
-                    email_address=sender_email,
-                    mapping=mapping,
-                    message_id=message_id,
-                    result="PROCESSED",
-                    notes=json.dumps(
-                        updated,
-                        ensure_ascii=False,
-                    ),
+                receive_logs.append(
+                    {
+                        "event": "RECEIVE",
+                        "bot_id": bot_id,
+                        "target_date": log_record["date"],
+                        "doctor": doctor["name"],
+                        "email_address": sender_email,
+                        "mapping": mapping,
+                        "message_id": message_id,
+                        "result": "PROCESSED",
+                        "notes": json.dumps(
+                            updated,
+                            ensure_ascii=False,
+                        ),
+                    }
                 )
 
-                records.append(
+                receive_records.append(
                     {
                         "timestamp":
                             now_moscow().strftime(
@@ -2077,7 +2643,7 @@ def process_incoming_messages(
                 processed += 1
 
                 print(
-                    f"Ответ обработан: "
+                    f"Ответ подготовлен: "
                     f"{doctor['name']} "
                     f"[{bot_id}]"
                 )
@@ -2088,6 +2654,58 @@ def process_incoming_messages(
                     "IMAP: ошибка обработки "
                     f"сообщения: {exc}"
                 )
+
+        # ----------------------------------------------------
+        # Сначала записываем H/J/L одним пакетным запросом.
+        # ----------------------------------------------------
+
+        if status_updates:
+
+            updates = []
+
+            for (
+                row_number,
+                sheet_col,
+            ), value in status_updates.items():
+
+                updates.append(
+                    {
+                        "row": row_number,
+                        "col": sheet_col,
+                        "value": value,
+                    }
+                )
+
+            print(
+                "Лист1: пакетная запись статусов "
+                f"({len(updates)} ячеек)"
+            )
+
+            batch_update_cells(
+                tasks_sheet,
+                updates,
+                "пакетная запись H/J/L",
+            )
+
+        # ----------------------------------------------------
+        # Затем одним запросом пишем RECEIVE в BoTon_Log.
+        # ----------------------------------------------------
+
+        if receive_logs:
+
+            print(
+                "BoTon_Log: пакетная запись RECEIVE "
+                f"({len(receive_logs)})"
+            )
+
+            append_log_entries(
+                log_sheet,
+                receive_logs,
+            )
+
+            records.extend(
+                receive_records
+            )
 
         return processed
 
