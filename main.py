@@ -50,7 +50,7 @@ DOCTORS_SHEET_NAME = "Врачи"
 LOG_SHEET_NAME = "BoTon_Log"
 
 # УПРАВЛЕНИЕ РАССЫЛКОЙ
-FORCE_RESEND = False  # True = принудительно отправить всё заново (игнорирует журнал и время)
+FORCE_RESEND = True  # True = принудительно отправить всё заново (игнорирует журнал и время)
 TEST_MODE = False
 TEST_RECEIVE_ONLY = False
 
