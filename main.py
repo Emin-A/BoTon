@@ -662,16 +662,28 @@ def send_summary_report(target_date, send_stats, received_count):
 
 def main():
     print(f"BOTON v{VERSION} | FORCE_RESEND={FORCE_RESEND} | TEST_TO_RESERVE={TEST_TO_RESERVE}")
+    
+    # 1. Определяем дату
     target_date = now_moscow().date()
     print(f"Дата: {target_date.strftime('%d.%m.%Y')} | Время МСК: {now_moscow().strftime('%H:%M:%S')}")
 
-    target_date = now_moscow().date()
+    # 2. Подключаемся к таблицам (с автоматическим поиском вкладки по дате)
     tasks_sheet, doctors_sheet, tasks_book = open_sheet(target_date)
+    
+    # 3. Создаём или получаем лист журнала BoTon_Log
+    log_sheet = ensure_log_sheet(tasks_book)
 
+    # 4. Загружаем базу врачей
+    doctors = load_doctors(doctors_sheet)
+
+    # 5. Загружаем задания из таблицы
     rows, stats = load_task_rows(tasks_sheet, target_date)
+
+    # 6. Проверяем входящие ответы (IMAP)
     received = process_incoming_messages(tasks_sheet, log_sheet, doctors)
     print(f"Обработано входящих: {received}")
 
+    # 7. Рассылка заданий
     send_stats = {"doctors": 0, "rows": 0, "tasks": 0, "errors": 0, "skipped": 0, "reserve": 0}
     if not TEST_RECEIVE_ONLY:
         if is_assignment_time() or FORCE_RESEND or TEST_TO_RESERVE:
@@ -679,7 +691,9 @@ def main():
         else:
             print("\n----- РАССЫЛКА НЕ ВЫПОЛНЯЕТСЯ (вне 08:00–12:00) -----")
 
+    # 8. Отправка отчёта заведующему
     send_summary_report(target_date, send_stats, received)
+    
     print(f"\nBOTON v{VERSION} завершён.")
 
 if __name__ == "__main__":
