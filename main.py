@@ -126,11 +126,34 @@ def get_google_client():
     return gspread.authorize(credentials)
 
 
-def open_sheet():
+def open_sheet(target_date=None):
     print("Подключение к Google Sheets...")
     client = get_google_client()
     tasks_book = client.open_by_key(TASKS_SPREADSHEET_ID)
-    tasks_sheet = tasks_book.worksheet(TASKS_SHEET_NAME)
+
+    # Показываем все доступные вкладки — для диагностики
+    all_sheets = [s.title for s in tasks_book.worksheets()]
+    print(f"Доступные вкладки: {all_sheets}")
+
+    # Ищем вкладку с именем = сегодняшняя дата (формат ДД.ММ.ГГГГ)
+    tasks_sheet = None
+    if target_date:
+        date_sheet_name = target_date.strftime("%d.%m.%Y")
+        if date_sheet_name in all_sheets:
+            tasks_sheet = tasks_book.worksheet(date_sheet_name)
+            print(f"Найдена вкладка с данными за сегодня: '{date_sheet_name}'")
+        else:
+            print(f"Вкладка '{date_sheet_name}' не найдена. "
+                  f"Данных за сегодня в таблице нет.")
+
+    # Если вкладки с датой нет — берём Лист1 (шаблон)
+    if tasks_sheet is None:
+        try:
+            tasks_sheet = tasks_book.worksheet("Лист1")
+            print("Используется вкладка 'Лист1' (шаблон, данных может не быть)")
+        except gspread.WorksheetNotFound:
+            raise RuntimeError("В таблице нет ни вкладки с датой, ни 'Лист1'")
+
     doctors_book = client.open_by_key(DOCTORS_SPREADSHEET_ID)
     doctors_sheet = doctors_book.worksheet(DOCTORS_SHEET_NAME)
     print("Google Sheets: OK")
