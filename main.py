@@ -1,5 +1,5 @@
 # ============================================================
-# BoTon v2.5
+# BoTon v2.6
 # Рассылка заданий + приём ответов врачей + запись H/J/L
 # + точная привязка ответа к отправленному заданию
 # + защищённый IMAP без STORE/UNSEEN
@@ -8,9 +8,9 @@
 # + защита от Google Sheets 429
 # + пакетная запись M / H-J-L / BoTon_Log
 # + детерминированный BOTON-ID для защиты от повторной рассылки
-# + ИТОГОВЫЙ ОТЧЕТ ЗАВЕДУЮЩЕМУ ОТДЕЛЕНИЕМ
+# + ИТОГОВЫЙ ТЕКСТОВЫЙ ОТЧЕТ ЗАВЕДУЮЩЕМУ ОТДЕЛЕНИЕМ
 #
-# VERSION: 2.5
+# VERSION: 2.6
 # ============================================================
 
 import os
@@ -37,7 +37,7 @@ from google.oauth2.service_account import Credentials
 # CONFIG
 # ============================================================
 
-VERSION = "2.5"
+VERSION = "2.6"
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
@@ -50,7 +50,7 @@ DOCTORS_SHEET_NAME = "Врачи"
 LOG_SHEET_NAME = "BoTon_Log"
 
 # УПРАВЛЕНИЕ РАССЫЛКОЙ
-FORCE_RESEND = True  # True = принудительно отправить всё заново (игнорирует журнал и время)
+FORCE_RESEND = False  # True = принудительно отправить всё заново (игнорирует журнал и время)
 TEST_MODE = False
 TEST_RECEIVE_ONLY = False
 
@@ -485,6 +485,7 @@ def send_email(recipient, subject, body):
     message["From"] = from_email
     message["To"] = recipient
     message["Subject"] = subject
+    # Отправляем как чистый текст (plain), что гарантирует корректное отображение везде
     message.attach(MIMEText(body, "plain", "utf-8"))
 
     context = ssl.create_default_context()
@@ -602,7 +603,6 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors_map, rows, target_dat
         bot_id = make_bot_id(target_date, doctor["name"], doctor_rows)
         state = get_assignment_log_state(records, bot_id)
 
-        # ИЗМЕНЕНИЕ: Пропускаем только если НЕ FORCE_RESEND
         if state == "SENT" and not FORCE_RESEND:
             print(f"Пропуск: BOTON-ID уже отправлен {bot_id}")
             skipped_logged += 1
@@ -978,37 +978,36 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
 
 
 # ============================================================
-# REPORT TO HEAD OF DEPARTMENT
+# REPORT TO HEAD OF DEPARTMENT (PLAIN TEXT)
 # ============================================================
 
 def send_summary_report(target_date, send_stats, received_count):
     print("\n----- ФОРМИРОВАНИЕ И ОТПРАВКА ОТЧЕТА -----")
     resend_mark = " (ПОВТОРНАЯ ОТПРАВКА)" if FORCE_RESEND else ""
     
-    html_body = f"""
-    <html>
-    <body style="font-family: Arial, sans-serif;">
-    <h2>ОТЧЕТ СИСТЕМЫ BoTon v{VERSION}{resend_mark}</h2>
-    <p><b>Дата формирования:</b> {target_date.strftime('%d.%m.%Y %H:%M')}</p>
-    <table border="1" cellpadding="8" style="border-collapse: collapse; text-align: left; background-color: #f9f9f9;">
-        <tr><td><b>Врачей обработано:</b></td><td>{send_stats['doctors']}</td></tr>
-        <tr><td><b>Успешно отправлено:</b></td><td>{send_stats['doctors'] - send_stats['errors']}</td></tr>
-        <tr><td><b>Отправлено на резервную почту:</b></td><td>{send_stats['reserve']}</td></tr>
-        <tr><td><b>Ошибок отправки:</b></td><td>{send_stats['errors']}</td></tr>
-        <tr><td><b>Строк обновлено в таблице (M):</b></td><td>{send_stats['rows']}</td></tr>
-        <tr><td><b>Всего заданий в рассылке:</b></td><td>{send_stats['tasks']}</td></tr>
-        <tr style="background-color: #e8f4f8;"><td><b>Получено ответов от врачей (IMAP):</b></td><td><b>{received_count}</b></td></tr>
-    </table>
-    <br>
-    <p><i>Система работает автоматически. При возникновении вопросов обращайтесь к администратору.</i></p>
-    </body>
-    </html>
-    """
+    # Формируем отчет в ЧИСТОМ ТЕКСТЕ (без HTML-тегов) для гарантированного отображения
+    text_body = (
+        f"ОТЧЕТ СИСТЕМЫ BoTon v{VERSION}{resend_mark}\n"
+        f"Дата формирования: {target_date.strftime('%d.%m.%Y %H:%M')}\n"
+        f"{'='*45}\n\n"
+        f"СТАТИСТИКА РАССЫЛКИ:\n"
+        f"  - Врачей обработано: ........... {send_stats['doctors']}\n"
+        f"  - Успешно отправлено: .......... {send_stats['doctors'] - send_stats['errors']}\n"
+        f"  - Отправлено на резервную почту: {send_stats['reserve']}\n"
+        f"  - Ошибок отправки: ............. {send_stats['errors']}\n"
+        f"  - Строк обновлено в таблице (M): {send_stats['rows']}\n"
+        f"  - Всего заданий в рассылке: .... {send_stats['tasks']}\n\n"
+        f"ВХОДЯЩИЕ ОТВЕТЫ:\n"
+        f"  - Получено и обработано ответов: {received_count}\n\n"
+        f"{'='*45}\n"
+        f"Система работает автоматически.\n"
+        f"При возникновении вопросов обращайтесь к администратору."
+    )
     
     subject = f"[ОТЧЕТ BoTon] Рассылка и ответы за {target_date.strftime('%d.%m.%Y')}{resend_mark}"
     
     try:
-        send_email(REPORT_EMAIL, subject, html_body)
+        send_email(REPORT_EMAIL, subject, text_body)
         print(f"ОТЧЕТ УСПЕШНО ОТПРАВЛЕН на {REPORT_EMAIL}")
     except Exception as exc:
         print(f"ОШИБКА ОТПРАВКИ ОТЧЕТА: {exc}")
@@ -1043,7 +1042,6 @@ def main():
     send_stats = {"doctors": 0, "rows": 0, "tasks": 0, "errors": 0, "skipped": 0, "reserve": 0}
     
     if not TEST_RECEIVE_ONLY:
-        # ИЗМЕНЕНИЕ: Рассылка разрешена в рабочее время ИЛИ при FORCE_RESEND
         if is_assignment_time() or FORCE_RESEND:
             if FORCE_RESEND:
                 print("\n----- ПРИНУДИТЕЛЬНАЯ РАССЫЛКА (FORCE_RESEND) -----")
@@ -1056,7 +1054,7 @@ def main():
             print("\n----- РАССЫЛКА НЕ ВЫПОЛНЯЕТСЯ -----")
             print("Рассылка заданий разрешена только с 08:00 до 12:00 МСК.")
 
-    # 3. Отправка отчета заведующему
+    # 3. Отправка текстового отчета заведующему
     send_summary_report(target_date, send_stats, received)
 
     print(f"\nBOTON v{VERSION} завершён успешно.")
