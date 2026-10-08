@@ -1,5 +1,5 @@
 # ============================================================
-# BoTon v2.6
+# BoTon v2.7
 # Рассылка заданий + приём ответов врачей + запись H/J/L
 # + точная привязка ответа к отправленному заданию
 # + защищённый IMAP без STORE/UNSEEN
@@ -9,8 +9,9 @@
 # + пакетная запись M / H-J-L / BoTon_Log
 # + детерминированный BOTON-ID для защиты от повторной рассылки
 # + ИТОГОВЫЙ ТЕКСТОВЫЙ ОТЧЕТ ЗАВЕДУЮЩЕМУ ОТДЕЛЕНИЕМ
+# + РЕЖИМ ПРОВЕРКИ: отправка всех писем на резервную почту
 #
-# VERSION: 2.6
+# VERSION: 2.7
 # ============================================================
 
 import os
@@ -37,7 +38,7 @@ from google.oauth2.service_account import Credentials
 # CONFIG
 # ============================================================
 
-VERSION = "2.6"
+VERSION = "2.7"
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
@@ -50,9 +51,9 @@ DOCTORS_SHEET_NAME = "Врачи"
 LOG_SHEET_NAME = "BoTon_Log"
 
 # УПРАВЛЕНИЕ РАССЫЛКОЙ
-FORCE_RESEND = False  # True = принудительно отправить всё заново (игнорирует журнал и время)
-TEST_MODE = False
-TEST_RECEIVE_ONLY = False
+FORCE_RESEND = False          # True = принудительно отправить всё заново (игнорирует журнал и время)
+TEST_MODE = False             # True = отправляет 1 общее тестовое письмо только себе (пропускает врачей)
+TEST_ROUTE_TO_BACKUP = False  # True = формирует письма для всех врачей, но отправляет их НА РЕЗЕРВНУЮ ПОЧТУ (чтобы не спамить врачей при проверке)
 
 REPORT_EMAIL = "eagaverdiev@mosmedzdrav.ru"  # Почта заведующего и резервная почта
 
@@ -368,8 +369,9 @@ def load_task_rows(tasks_sheet, target_date):
             stats["other_branch"] += 1
             continue
         
-        # Если НЕ принудительная отправка, проверяем столбец M
-        if not FORCE_RESEND and str(row[12]).strip():
+        completion = str(row[12]).strip()
+        # ИГНОРИРУЕМ пометку [ТЕСТ], чтобы тестовый прогон не блокировал реальную рассылку
+        if not FORCE_RESEND and completion and completion.lower() not in ("null", "undefined") and not completion.startswith("[ТЕСТ]"):
             stats["already_processed"] += 1
             continue
 
@@ -485,7 +487,6 @@ def send_email(recipient, subject, body):
     message["From"] = from_email
     message["To"] = recipient
     message["Subject"] = subject
-    # Отправляем как чистый текст (plain), что гарантирует корректное отображение везде
     message.attach(MIMEText(body, "plain", "utf-8"))
 
     context = ssl.create_default_context()
@@ -582,6 +583,7 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors_map, rows, target_dat
     successful_rows = 0
     total_tasks = 0
     reserve_count = 0
+    test_route_count = 0
     errors = 0
     skipped_logged = 0
 
@@ -616,28 +618,37 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors_map, rows, target_dat
 
         email_address = normalize_email(doctor["email"])
         is_reserve = False
-        if not email_address:
-            email_address = REPORT_EMAIL
-            reserve_count += 1
-            is_reserve = True
+        is_test_route = False
 
-        resend_mark = " (ПОВТОРНО)" if FORCE_RESEND else ""
-        subject = f"Задания на сегодня{resend_mark} [BOTON-ID:{bot_id}]"
+        if TEST_ROUTE_TO_BACKUP:
+            actual_recipient = REPORT_EMAIL
+            is_test_route = True
+            test_route_count += 1
+            subject = f"[ТЕСТ ВРАЧА: {doctor['name']}] Задания на сегодня [BOTON-ID:{bot_id}]"
+        elif not email_address:
+            actual_recipient = REPORT_EMAIL
+            is_reserve = True
+            reserve_count += 1
+            subject = f"Задания на сегодня [BOTON-ID:{bot_id}]"
+        else:
+            actual_recipient = email_address
+            subject = f"Задания на сегодня [BOTON-ID:{bot_id}]"
+
         body = build_email_body(doctor, patients, bot_id)
 
         prepared.append({
             "doctor": doctor, "doctor_rows": doctor_rows, "patients": patients,
-            "mapping": mapping, "bot_id": bot_id, "email_address": email_address,
+            "mapping": mapping, "bot_id": bot_id, "actual_recipient": actual_recipient,
             "subject": subject, "body": body, "target_date": target_date.strftime("%d.%m.%Y"),
-            "is_reserve": is_reserve,
+            "is_reserve": is_reserve, "is_test_route": is_test_route,
         })
 
     pending_entries = []
     for item in prepared:
-        notes = "ПОВТОРНАЯ ОТПРАВКА" if FORCE_RESEND else ""
+        notes = "ПОВТОРНАЯ ОТПРАВКА" if FORCE_RESEND else ("ТЕСТОВЫЙ ПРОГОН" if item["is_test_route"] else "")
         pending_entries.append({
             "event": "SEND", "bot_id": item["bot_id"], "target_date": item["target_date"],
-            "doctor": item["doctor"]["name"], "email_address": item["email_address"],
+            "doctor": item["doctor"]["name"], "email_address": item["actual_recipient"],
             "mapping": item["mapping"], "result": "PENDING", "notes": notes,
         })
 
@@ -654,21 +665,26 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors_map, rows, target_dat
         doctor_rows = item["doctor_rows"]
         mapping = item["mapping"]
         bot_id = item["bot_id"]
-        email_address = item["email_address"]
+        actual_recipient = item["actual_recipient"]
 
         try:
-            send_email(email_address, item["subject"], item["body"])
+            send_email(actual_recipient, item["subject"], item["body"])
             
-            notes = "ПОВТОРНАЯ ОТПРАВКА" if FORCE_RESEND else ""
+            notes = "ПОВТОРНАЯ ОТПРАВКА" if FORCE_RESEND else ("ТЕСТОВЫЙ ПРОГОН" if item["is_test_route"] else "")
             sent_log_entries.append({
                 "event": "SEND", "bot_id": bot_id, "target_date": item["target_date"],
-                "doctor": doctor["name"], "email_address": email_address,
+                "doctor": doctor["name"], "email_address": actual_recipient,
                 "mapping": mapping, "result": "SENT", "notes": notes,
             })
 
             timestamp = now_moscow().strftime("%d.%m.%Y %H:%M:%S")
-            resend_mark = " (ПОВТОРНО)" if FORCE_RESEND else ""
-            m_value = f"Отправлено{resend_mark} {timestamp} [{bot_id}]"
+            
+            if item["is_test_route"]:
+                m_value = f"[ТЕСТ] Отправлено на резерв {timestamp} [{bot_id}]"
+            elif item["is_reserve"]:
+                m_value = f"Отправлено на резерв {timestamp} [{bot_id}]"
+            else:
+                m_value = f"Отправлено {timestamp} [{bot_id}]"
 
             for row in doctor_rows:
                 m_updates.append({"row": row["row_number"], "col": 13, "value": m_value})
@@ -676,13 +692,13 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors_map, rows, target_dat
             successful_doctors += 1
             successful_rows += len(doctor_rows)
             total_tasks += sum(len(t["tasks"]) for t in doctor_rows)
-            print(f"Письмо врачу отправлено: {doctor['name']} -> {email_address}")
+            print(f"Письмо отправлено: {doctor['name']} -> {actual_recipient}")
 
         except Exception as exc:
             errors += 1
             error_log_entries.append({
                 "event": "SEND", "bot_id": bot_id, "target_date": item["target_date"],
-                "doctor": doctor["name"], "email_address": email_address,
+                "doctor": doctor["name"], "email_address": actual_recipient,
                 "mapping": mapping, "result": "ERROR", "notes": str(exc),
             })
             print(f"Ошибка отправки {doctor['name']}: {exc}")
@@ -698,9 +714,10 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors_map, rows, target_dat
 
     print("ИТОГ РАССЫЛКИ:")
     print(f"Врачей обработано: {len(grouped)}")
-    print(f"Успешно отправлено врачам: {successful_doctors}")
+    print(f"Успешно отправлено: {successful_doctors}")
+    print(f"Тестовых отправлений на резерв: {test_route_count}")
+    print(f"Отправлено на резерв (нет email): {reserve_count}")
     print(f"Пропущено по журналу: {skipped_logged}")
-    print(f"Резерв: {reserve_count}")
     print(f"Ошибок: {errors}")
     print(f"Строк записано в M: {successful_rows}")
     print(f"Всего заданий: {total_tasks}")
@@ -711,7 +728,8 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors_map, rows, target_dat
         "tasks": total_tasks,
         "errors": errors,
         "skipped": skipped_logged,
-        "reserve": reserve_count
+        "reserve": reserve_count,
+        "test_route": test_route_count
     }
 
 
@@ -984,27 +1002,28 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
 def send_summary_report(target_date, send_stats, received_count):
     print("\n----- ФОРМИРОВАНИЕ И ОТПРАВКА ОТЧЕТА -----")
     resend_mark = " (ПОВТОРНАЯ ОТПРАВКА)" if FORCE_RESEND else ""
+    test_mark = " (ТЕСТОВЫЙ ПРОГОН НА РЕЗЕРВ)" if TEST_ROUTE_TO_BACKUP else ""
     
-    # Формируем отчет в ЧИСТОМ ТЕКСТЕ (без HTML-тегов) для гарантированного отображения
     text_body = (
-        f"ОТЧЕТ СИСТЕМЫ BoTon v{VERSION}{resend_mark}\n"
+        f"ОТЧЕТ СИСТЕМЫ BoTon v{VERSION}{resend_mark}{test_mark}\n"
         f"Дата формирования: {target_date.strftime('%d.%m.%Y %H:%M')}\n"
-        f"{'='*45}\n\n"
+        f"{'='*50}\n\n"
         f"СТАТИСТИКА РАССЫЛКИ:\n"
         f"  - Врачей обработано: ........... {send_stats['doctors']}\n"
         f"  - Успешно отправлено: .......... {send_stats['doctors'] - send_stats['errors']}\n"
-        f"  - Отправлено на резервную почту: {send_stats['reserve']}\n"
+        f"  - Тестовых отправлений на резерв: {send_stats['test_route']}\n"
+        f"  - Отправлено на резерв (нет email): {send_stats['reserve']}\n"
         f"  - Ошибок отправки: ............. {send_stats['errors']}\n"
         f"  - Строк обновлено в таблице (M): {send_stats['rows']}\n"
         f"  - Всего заданий в рассылке: .... {send_stats['tasks']}\n\n"
         f"ВХОДЯЩИЕ ОТВЕТЫ:\n"
         f"  - Получено и обработано ответов: {received_count}\n\n"
-        f"{'='*45}\n"
+        f"{'='*50}\n"
         f"Система работает автоматически.\n"
         f"При возникновении вопросов обращайтесь к администратору."
     )
     
-    subject = f"[ОТЧЕТ BoTon] Рассылка и ответы за {target_date.strftime('%d.%m.%Y')}{resend_mark}"
+    subject = f"[ОТЧЕТ BoTon] Рассылка и ответы за {target_date.strftime('%d.%m.%Y')}{resend_mark}{test_mark}"
     
     try:
         send_email(REPORT_EMAIL, subject, text_body)
@@ -1020,7 +1039,7 @@ def send_summary_report(target_date, send_stats, received_count):
 def main():
     print(f"BOTON v{VERSION}")
     print(f"TEST_MODE = {TEST_MODE}")
-    print(f"TEST_RECEIVE_ONLY = {TEST_RECEIVE_ONLY}")
+    print(f"TEST_ROUTE_TO_BACKUP = {TEST_ROUTE_TO_BACKUP}")
     print(f"FORCE_RESEND = {FORCE_RESEND}")
 
     target_date = now_moscow().date()
@@ -1039,11 +1058,13 @@ def main():
     print(f"Обработано входящих ответов: {received}")
 
     # 2. Рассылка заданий
-    send_stats = {"doctors": 0, "rows": 0, "tasks": 0, "errors": 0, "skipped": 0, "reserve": 0}
+    send_stats = {"doctors": 0, "rows": 0, "tasks": 0, "errors": 0, "skipped": 0, "reserve": 0, "test_route": 0}
     
-    if not TEST_RECEIVE_ONLY:
-        if is_assignment_time() or FORCE_RESEND:
-            if FORCE_RESEND:
+    if not TEST_MODE and not TEST_RECEIVE_ONLY:
+        if is_assignment_time() or FORCE_RESEND or TEST_ROUTE_TO_BACKUP:
+            if TEST_ROUTE_TO_BACKUP:
+                print("\n----- ТЕСТОВЫЙ ПРОГОН (ВСЕ ПИСЬМА ИДУТ НА РЕЗЕРВНУЮ ПОЧТУ) -----")
+            elif FORCE_RESEND:
                 print("\n----- ПРИНУДИТЕЛЬНАЯ РАССЫЛКА (FORCE_RESEND) -----")
             else:
                 print("\n----- РАССЫЛКА -----")
