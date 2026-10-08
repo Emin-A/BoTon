@@ -51,11 +51,12 @@ DOCTORS_SHEET_NAME = "Врачи"
 LOG_SHEET_NAME = "BoTon_Log"
 
 # УПРАВЛЕНИЕ РАССЫЛКОЙ
-FORCE_RESEND = False          # True = принудительно отправить всё заново (игнорирует журнал и время)
-TEST_MODE = False             # True = отправляет 1 общее тестовое письмо только себе (пропускает врачей)
-TEST_ROUTE_TO_BACKUP = True  # True = формирует письма для всех врачей, но отправляет их НА РЕЗЕРВНУЮ ПОЧТУ (чтобы не спамить врачей при проверке)
+TEST_MODE = False
+TEST_RECEIVE_ONLY = False  # ← ЭТА СТРОКА ОТСУТСТВОВАЛА
+TEST_ROUTE_TO_BACKUP = True
+FORCE_RESEND = False
 
-REPORT_EMAIL = "eagaverdiev@mosmedzdrav.ru"  # Почта заведующего и резервная почта
+REPORT_EMAIL = "eagaverdiev@mosmedzdrav.ru"
 
 
 # ============================================================
