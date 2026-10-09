@@ -1290,11 +1290,20 @@ def main():
             print("\n----- РАССЫЛКА НЕ ВЫПОЛНЯЕТСЯ -----")
             print("Вне окна 08:00–12:00 МСК. FORCE_RESEND=False.")
 
+
     # ------------------- ОТЧЁТ -------------------
-    send_summary_report(target_date, send_stats, received, tasks_sheet.title)
+    # Отчёт отправляем только если было что отчитываться:
+    #   - были отправки врачам (> 0),
+    #   - или обработаны ответы врачей (> 0),
+    #   - или это принудительный / диагностический прогон.
+    has_send    = send_stats.get("doctors", 0) > 0
+    has_receive = received > 0
+    force_report = FORCE_RESEND or TEST_TO_RESERVE or TEST_DOCTOR_DIAG
 
-    print(f"\nBoTon v{VERSION} завершён.")
-
+    if has_send or has_receive or force_report:
+        send_summary_report(target_date, send_stats, received, tasks_sheet.title)
+    else:
+        print("\nОтчёт не отправляется: 0 отправок и 0 ответов (пустой прогон).")
 
 if __name__ == "__main__":
     main()
