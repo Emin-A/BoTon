@@ -5,7 +5,19 @@ from datetime import timedelta
 from config import *
 from utils import normalize_text, normalize_email, now_moscow
 from log_store import load_log_records, is_message_processed, find_log_by_bot_id, append_log_entries
-from google_sheets import sheets_call, batch_update_cells
+from google_sheets import batch_update_cells
+
+# Символы, которыми врач может отметить квадратик: [x] [х] [v] [✓] [+] [*]
+CHECK_MARKS = set("xXхХvV✓✔+*")
+
+# Строка-квадратик: «[ ] 2Б — отработано» (допускается цитирование «> » в начале).
+CHECKBOX_RE = re.compile(
+    r"^[\[(]\s*([^\]\)\s]?)\s*[\])]\s*(\d{1,3})([АБВABabабв])?(?![0-9])"
+)
+
+LATIN_TO_CYR = {"A": "А", "B": "В"}
+
+
 def decode_mime_header(value):
     if not value:
         return ""
@@ -19,6 +31,7 @@ def decode_mime_header(value):
         else:
             out.append(str(part))
     return "".join(out)
+
 
 def extract_message_body(msg):
     if msg.is_multipart():
@@ -38,48 +51,67 @@ def extract_message_body(msg):
     cs = msg.get_content_charset() or "utf-8"
     return payload.decode(cs, errors="replace")
 
+
 def extract_bot_id(subject, body):
     text = f"{subject}\n{body}"
     m = re.search(r"BOTON-ID\s*[:\-]?\s*(BOTON-[A-Za-z0-9_.\-]+)", text, flags=re.IGNORECASE)
     return m.group(1) if m else ""
 
-def parse_status(text):
-    n = normalize_text(text)
-    if "не выполнено" in n:
-        return "❌ Не выполнено"
-    if "частично" in n:
-        return "⚠️ Частично"
-    if "выполнено" in n:
-        return "✅ Выполнено"
-    return None
 
-def expand_status_items(text, mapping):
-    result = []
-    normalized = normalize_text(text)
-    pattern = re.compile(
-        r"(?:выполнено|частично|не\s+выполнено)\s*[:\-]?\s*([0-9]+[А-В]?)",
-        flags=re.IGNORECASE,
-    )
-    for key in pattern.findall(normalized):
-        key = key.upper()
-        if key in mapping:
-            result.append(key)
+def resolve_keys(digits, letter, mapping):
+    """Возвращает список ключей mapping, к которым относится строка ответа."""
+    key = f"{digits}{letter}"
+    if key in mapping:
+        return [key]
+    if not letter:
+        # Номер пациента без буквы: все его задания («все задания отработаны»).
+        return [k for k in mapping if re.fullmatch(rf"{digits}[АБВ]", k)]
+    return []
+
+
+def parse_reply(body, mapping):
+    """Разбор отметок-квадратиков в ответе врача.
+
+    Возвращает None, если в письме нет ни одной строки-квадратика (например,
+    врач ответил «спасибо» и удалил текст письма), иначе словарь
+    {ключ задания: статус} для ВСЕХ заданий письма. Что не отмечено,
+    получает статус «Задание не отработано».
+    """
+    done, failed = set(), set()
+    seen = False
+    for raw_line in body.splitlines():
+        line = re.sub(r"^[\s>]+", "", raw_line)
+        m = CHECKBOX_RE.match(line)
+        if not m:
+            continue
+        digits = str(int(m.group(2)))
+        letter = (m.group(3) or "").upper()
+        letter = LATIN_TO_CYR.get(letter, letter)
+        keys = resolve_keys(digits, letter, mapping)
+        if not keys:
+            continue
+        norm = normalize_text(line[m.end():])
+        if "не состоялась" in norm or "не состоялось" in norm:
+            target = failed
+        elif "отработан" in norm:
+            target = done
+        else:
+            continue
+        seen = True
+        if m.group(1) in CHECK_MARKS:
+            target.update(keys)
+    if not seen:
+        return None
+    result = {}
+    for key in mapping:
+        if key in failed:
+            result[key] = STATUS_CONSULT_FAILED
+        elif key in done:
+            result[key] = STATUS_DONE
+        else:
+            result[key] = STATUS_NOT_DONE
     return result
 
-def collect_status_update(updates, current_values, row_number, status_col, new_status):
-    sheet_col = status_col + 1
-    current = ""
-    if 1 <= row_number <= len(current_values):
-        r = current_values[row_number - 1]
-        if sheet_col - 1 < len(r):
-            current = str(r[sheet_col - 1] or "").strip()
-
-    if STATUS_PRIORITY.get(new_status, 0) < STATUS_PRIORITY.get(current, 0):
-        return
-    key = (row_number, sheet_col)
-    if STATUS_PRIORITY.get(updates.get(key, ""), 0) >= STATUS_PRIORITY.get(new_status, 0):
-        return
-    updates[key] = new_status
 
 def process_incoming_messages(tasks_sheet, log_sheet, doctors):
     print("\n----- ПРОВЕРКА ВХОДЯЩИХ ОТВЕТОВ -----")
@@ -127,11 +159,6 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
 
         candidates = candidates[-IMAP_MAX_TOTAL:]
         print(f"IMAP: найдено потенциальных писем: {len(candidates)}")
-
-        current_values = sheets_call(
-            lambda: tasks_sheet.get_all_values(),
-            "чтение Лист1 перед H/J/L",
-        )
 
         status_updates = {}
         receive_logs = []
@@ -186,22 +213,16 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
                 if not mapping:
                     continue
 
-                text_all = f"{subject}\n{body}"
-                status_value = parse_status(text_all)
-                if not status_value:
-                    continue
-
-                keys = expand_status_items(text_all, mapping)
-                if not keys:
+                answers = parse_reply(body, mapping)
+                if not answers:
                     continue
 
                 updated = []
-                for key in keys:
+                for key, status_value in answers.items():
                     for item in mapping.get(key, []):
-                        collect_status_update(
-                            status_updates, current_values,
-                            item["row_number"], item["status_col"], status_value,
-                        )
+                        # Письма идут по порядку получения: более поздний ответ
+                        # перезаписывает более ранний.
+                        status_updates[(item["row_number"], item["status_col"] + 1)] = status_value
                         updated.append({
                             "key": key,
                             "row": item["row_number"],

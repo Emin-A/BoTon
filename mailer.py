@@ -20,25 +20,41 @@ def build_email_body(doctor, patients, bot_id):
     lines = [
         f"Здравствуйте, {address}!",
         "",
-        "Вам назначены задания по пациентам, записанным на сегодня:",
+        "Вам назначены задания по пациентам, записанным на сегодня.",
+        "",
+        "КАК ОТВЕТИТЬ В КОНЦЕ СМЕНЫ:",
+        "1) Нажмите «Ответить» (текст письма с квадратиками должен остаться).",
+        "2) Там, где задание сделано, замените пустой квадратик на отмеченный.",
+        "   Было: [ ]     Стало: [x]",
+        "3) Если консультация не состоялась, отметьте строку «консультация не состоялась».",
+        "4) Что не отмечено, считается не отработанным.",
+        "5) Не удаляйте из письма номера пациентов и строку BOTON-ID.",
+        "",
+        "=" * 50,
         "",
     ]
     for pnum, patient in enumerate(patients, start=1):
         p_name = patient["patient_name"] or "ФИО не указано"
         p_id = patient["patient_id"] or "не указан"
+        tasks = patient["tasks"]
+        multi = len(tasks) > 1
         lines.append(f"{pnum}. {p_name} — ОМС/ID: {p_id}")
-        for t_idx, task in enumerate(patient["tasks"]):
-            prefix = "" if len(patient["tasks"]) == 1 else f"{TASK_LETTERS[t_idx]}) "
+        for t_idx, task in enumerate(tasks):
+            key = f"{pnum}{TASK_LETTERS[t_idx]}" if multi else f"{pnum}"
+            prefix = f"{TASK_LETTERS[t_idx]}) " if multi else ""
             lines.append(f"   {prefix}{task['title']}")
             if task["text"]:
                 lines.append(f"      {task['text']}")
+            lines.append(f"      [ ] {key} — отработано")
+            lines.append(f"      [ ] {key} — консультация не состоялась")
+        if multi:
+            lines.append(f"   [ ] {pnum} — все задания отработаны")
         lines.append("")
 
     resend_mark = " (ПОВТОРНАЯ ОТПРАВКА)" if FORCE_RESEND else ""
     lines.extend([
+        "=" * 50,
         f"BOTON-ID: {bot_id}{resend_mark}",
-        "",
-        "Просьба вернуть отработанные задания заведующему отделением.",
         "",
         f"Отправлено: {now_moscow().strftime('%d.%m.%Y %H:%M')} МСК",
     ])
@@ -89,17 +105,12 @@ def send_doctor_diagnostic(rows, doctors, target_date):
     bot_id = make_bot_id(target_date, sig, doctor_rows)
     body = build_email_body(doctor, patients, bot_id)
 
+    # Тело письма в лог НЕ печатается: в нём ФИО пациентов и номера ОМС.
     print("\n--- ИНФОРМАЦИЯ О ПИСЬМЕ ---")
-    print(f"Врач (из таблицы):  {source_name}")
-    print(f"Врач (из базы):     {doctor['name']}")
-    print(f"Email врача:        {doctor['email'] or 'НЕТ'}")
     print(f"Строк у врача:      {len(doctor_rows)}")
     print(f"Заданий:            {sum(len(r['tasks']) for r in doctor_rows)}")
     print(f"BOTON-ID:           {bot_id}")
     print(f"Дата:               {target_date.strftime('%d.%m.%Y')}")
-    print("--- ТЕЛО ПИСЬМА ---")
-    print(body)
-    print("--- КОНЕЦ ТЕЛА ---\n")
 
     subject = (
         f"[ДИАГНОСТИКА BoTon] Для врача: {doctor['name']} — "
@@ -109,8 +120,6 @@ def send_doctor_diagnostic(rows, doctors, target_date):
     try:
         send_email(TEST_EMAIL, subject, body)
         print("✅ ДИАГНОСТИЧЕСКОЕ ПИСЬМО ОТПРАВЛЕНО")
-        print(f"   Получатель: {TEST_EMAIL}")
-        print(f"   Тема: {subject}")
         return True
     except Exception as exc:
         print(f"❌ ОШИБКА ДИАГНОСТИЧЕСКОЙ ОТПРАВКИ: {exc}")
