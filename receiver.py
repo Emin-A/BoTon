@@ -6,6 +6,7 @@ from config import *
 from utils import normalize_text, normalize_email, now_moscow
 from log_store import load_log_records, is_message_processed, find_log_by_bot_id, append_log_entries
 from google_sheets import batch_update_cells
+from mailer import send_email
 
 # Символы, которыми врач может отметить квадратик: [x] [х] [v] [✓] [+] [*]
 CHECK_MARKS = set("xXхХvV✓✔+*")
@@ -113,6 +114,47 @@ def parse_reply(body, mapping):
     return result
 
 
+def _col_letter(index):
+    return chr(ord("A") + index) if 0 <= index < 26 else str(index + 1)
+
+
+def send_test_notice(bot_id, updated):
+    """Письмо вам с результатом разбора тестового ответа."""
+    subject = f"[ТЕСТ BoTon] Результат разбора вашего ответа [{bot_id}]"
+    if updated is None:
+        body = (
+            "ТЕСТ BoTon: ваше письмо получено, но отметки не найдены.\n\n"
+            "Проверьте, что вы нажали «Ответить», текст письма с квадратиками "
+            "остался, а пустые квадратики [ ] заменены на [x].\n"
+            f"BOTON-ID: {bot_id}\n"
+        )
+    else:
+        lines = [
+            "ТЕСТ BoTon: ваш ответ получен и разобран.",
+            "",
+            "Так программа поняла отметки:",
+        ]
+        for u in updated:
+            lines.append(
+                f"  {u['key']} → строка {u['row']}, столбец {u['column']} "
+                f"({u['title']}): {u['status']}"
+            )
+        lines.append("")
+        lines.append("Что не отмечено, записано как «Задание не отработано».")
+        if TEST_WRITE_TABLE:
+            lines.append("Статусы ЗАПИСАНЫ в таблицу (Лист1, столбцы H/J/L): "
+                         "после проверки очистите эти ячейки вручную.")
+        else:
+            lines.append("В таблицу в тестовом режиме ничего не записано.")
+        lines.append(f"BOTON-ID: {bot_id}")
+        body = "\n".join(lines)
+    try:
+        send_email(TEST_EMAIL, subject, body)
+        print(f"Тест: результат разбора отправлен на {TEST_EMAIL}")
+    except Exception as exc:
+        print(f"Тест: не удалось отправить результат разбора: {exc}")
+
+
 def process_incoming_messages(tasks_sheet, log_sheet, doctors):
     print("\n----- ПРОВЕРКА ВХОДЯЩИХ ОТВЕТОВ -----")
     host = os.environ.get("IMAP_HOST", "")
@@ -120,7 +162,10 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
     user = os.environ.get("IMAP_USER", "")
     password = os.environ.get("IMAP_PASSWORD", "")
 
+    test_email = normalize_email(TEST_EMAIL)
     doctor_emails = [normalize_email(d["email"]) for d in doctors if d["email"]]
+    # Адрес для тестов тоже проверяем: на тестовые письма отвечаете вы.
+    search_addrs = list(dict.fromkeys(doctor_emails + ([test_email] if test_email else [])))
     processed = 0
     mail = None
 
@@ -141,7 +186,7 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
 
         candidates = []
         seen = set()
-        for addr in doctor_emails:
+        for addr in search_addrs:
             if not addr:
                 continue
             try:
@@ -162,6 +207,7 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
 
         status_updates = {}
         receive_logs = []
+        test_notices = []
 
         for num, expected_email in candidates:
             try:
@@ -191,15 +237,22 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
                 if sender_email != expected_email:
                     continue
 
+                bot_id = extract_bot_id(subject, body)
+                if not bot_id:
+                    continue
+                is_test = bot_id.upper().startswith("BOTON-TEST")
+
                 doctor = next(
                     (d for d in doctors if normalize_email(d["email"]) == sender_email),
                     None,
                 )
-                if not doctor:
-                    continue
-
-                bot_id = extract_bot_id(subject, body)
-                if not bot_id:
+                if is_test:
+                    # Тестовые ответы принимаются только с адреса TEST_EMAIL.
+                    if sender_email != test_email:
+                        continue
+                    if not doctor:
+                        doctor = {"name": "ТЕСТ", "email": sender_email}
+                elif not doctor:
                     continue
 
                 log_record = find_log_by_bot_id(records, bot_id)
@@ -215,6 +268,19 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
 
                 answers = parse_reply(body, mapping)
                 if not answers:
+                    if is_test:
+                        test_notices.append((bot_id, None))
+                        receive_logs.append({
+                            "event": "RECEIVE",
+                            "bot_id": bot_id,
+                            "target_date": log_record["date"],
+                            "doctor": doctor["name"],
+                            "email_address": sender_email,
+                            "mapping": mapping,
+                            "message_id": message_id,
+                            "result": "TEST_UNRECOGNIZED",
+                            "notes": "отметки не найдены",
+                        })
                     continue
 
                 updated = []
@@ -222,10 +288,12 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
                     for item in mapping.get(key, []):
                         # Письма идут по порядку получения: более поздний ответ
                         # перезаписывает более ранний.
-                        status_updates[(item["row_number"], item["status_col"] + 1)] = status_value
+                        if not is_test or TEST_WRITE_TABLE:
+                            status_updates[(item["row_number"], item["status_col"] + 1)] = status_value
                         updated.append({
                             "key": key,
                             "row": item["row_number"],
+                            "column": _col_letter(item["status_col"]),
                             "title": item["title"],
                             "status": status_value,
                         })
@@ -238,11 +306,15 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
                     "email_address": sender_email,
                     "mapping": mapping,
                     "message_id": message_id,
-                    "result": "PROCESSED",
+                    "result": "TEST_PROCESSED" if is_test else "PROCESSED",
                     "notes": json.dumps(updated, ensure_ascii=False),
                 })
-                processed += 1
-                print(f"Ответ обработан: {doctor['name']} [{bot_id}]")
+                if is_test:
+                    test_notices.append((bot_id, updated))
+                    print(f"Тестовый ответ обработан [{bot_id}]")
+                else:
+                    processed += 1
+                    print(f"Ответ обработан: {doctor['name']} [{bot_id}]")
 
             except Exception as exc:
                 print(f"IMAP: ошибка обработки сообщения: {exc}")
@@ -258,6 +330,9 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
         if receive_logs:
             print(f"BoTon_Log: пакетная запись RECEIVE ({len(receive_logs)})")
             append_log_entries(log_sheet, receive_logs)
+
+        for bot_id, updated in test_notices:
+            send_test_notice(bot_id, updated)
 
         return processed
 

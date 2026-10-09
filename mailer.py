@@ -3,8 +3,9 @@ import os, ssl, smtplib
 from email.message import EmailMessage
 from config import *
 from utils import normalize_text, now_moscow, get_signature
-from tasks import build_patients, make_bot_id, group_by_doctor
+from tasks import build_patients, make_bot_id, group_by_doctor, build_response_task_map
 from doctors import find_doctor_robust
+from log_store import append_log_entries
 def build_email_body(doctor, patients, bot_id):
     normalized = normalize_text(doctor["name"])
     parts = normalized.split()
@@ -81,46 +82,91 @@ def send_email(to_email, subject, body):
         s.login(user, password)
         s.send_message(msg)
 
-def send_doctor_diagnostic(rows, doctors, target_date):
+def send_doctor_diagnostic(rows, doctors, target_date, log_sheet=None):
+    """Тест: письмо одного врача уходит на TEST_EMAIL (ФИО и ОМС пациентов заменены).
+
+    Письму присваивается особый код BOTON-TEST-..., он записывается в журнал,
+    чтобы ответ на письмо можно было разобрать. Реальную рассылку это не затрагивает:
+    столбец M не заполняется, а код отличается от боевого.
+    """
     print("\n" + "=" * 60)
-    print("ДИАГНОСТИКА: ОДНО ПИСЬМО ЛЮБОГО ВРАЧА → TEST_EMAIL")
+    print("ТЕСТ: ПИСЬМО ОДНОГО ВРАЧА → TEST_EMAIL")
     print("=" * 60)
-    print(f"Получатель диагностики: {TEST_EMAIL}")
+    print(f"Получатель теста: {TEST_EMAIL}")
 
     if not rows:
-        print("Нет подходящих строк для диагностики (см. статистику выше).")
+        print("Нет подходящих строк для теста (см. статистику выше).")
         return False
 
-    grouped = group_by_doctor(rows)
-    doctor_key, doctor_rows = next(iter(grouped.items()))
-    source_name = doctor_rows[0]["doctor_name"]
-    doctor = find_doctor_robust(source_name, doctors)
+    doctor, doctor_rows = None, None
+    for _, candidate_rows in group_by_doctor(rows).items():
+        found = find_doctor_robust(candidate_rows[0]["doctor_name"], doctors)
+        if found:
+            doctor, doctor_rows = found, candidate_rows
+            break
 
     if not doctor:
-        print(f"Врач '{source_name}' не найден в базе — диагностика невозможна.")
+        print("Ни один врач из строк не найден в базе — тест невозможен.")
         return False
 
-    patients = build_patients(doctor_rows)
-    sig = get_signature(doctor["name"])
-    bot_id = make_bot_id(target_date, sig, doctor_rows)
-    body = build_email_body(doctor, patients, bot_id)
+    # Анонимизация: в тестовом письме нет настоящих ФИО и номеров ОМС.
+    patients = []
+    for idx, p in enumerate(build_patients(doctor_rows), start=1):
+        p = dict(p)
+        p["patient_name"] = f"Тестовый пациент {idx}"
+        p["patient_id"] = "000000"
+        patients.append(p)
 
-    # Тело письма в лог НЕ печатается: в нём ФИО пациентов и номера ОМС.
+    mapping = build_response_task_map(patients)
+    sig = get_signature(doctor["name"])
+    real_id = make_bot_id(target_date, sig, doctor_rows)
+    bot_id = f"BOTON-TEST-{real_id[len('BOTON-'):]}-{now_moscow().strftime('%H%M%S')}"
+
+    header = "\n".join([
+        "=== ТЕСТ BoTon ===",
+        f"Это письмо, которое получил бы врач: {doctor['name']}.",
+        "ФИО пациентов и номера ОМС заменены на тестовые.",
+        "Ответьте на него так, как ответил бы врач (замените [ ] на [x]).",
+        "Результат разбора придёт вам отдельным письмом (до 30 минут).",
+        "==================",
+        "",
+        "",
+    ])
+    body = header + build_email_body(doctor, patients, bot_id)
+
+    # Тело письма в лог НЕ печатается.
     print("\n--- ИНФОРМАЦИЯ О ПИСЬМЕ ---")
-    print(f"Строк у врача:      {len(doctor_rows)}")
-    print(f"Заданий:            {sum(len(r['tasks']) for r in doctor_rows)}")
+    print(f"Врач:               {doctor['name']}")
+    print(f"Пациентов в письме: {len(patients)}")
+    print(f"Заданий:            {sum(len(p['tasks']) for p in patients)}")
     print(f"BOTON-ID:           {bot_id}")
     print(f"Дата:               {target_date.strftime('%d.%m.%Y')}")
 
     subject = (
-        f"[ДИАГНОСТИКА BoTon] Для врача: {doctor['name']} — "
-        f"{target_date.strftime('%d.%m.%Y')}"
+        f"[ТЕСТ BoTon] Задания врача {doctor['name']} за "
+        f"{target_date.strftime('%d.%m.%Y')} [BOTON-ID:{bot_id}]"
     )
 
     try:
         send_email(TEST_EMAIL, subject, body)
-        print("✅ ДИАГНОСТИЧЕСКОЕ ПИСЬМО ОТПРАВЛЕНО")
-        return True
     except Exception as exc:
-        print(f"❌ ОШИБКА ДИАГНОСТИЧЕСКОЙ ОТПРАВКИ: {exc}")
+        print(f"❌ ОШИБКА ТЕСТОВОЙ ОТПРАВКИ: {exc}")
         return False
+
+    print("✅ ТЕСТОВОЕ ПИСЬМО ОТПРАВЛЕНО")
+    if log_sheet is not None:
+        try:
+            append_log_entries(log_sheet, [{
+                "event": "SEND",
+                "bot_id": bot_id,
+                "target_date": target_date.strftime("%d.%m.%Y"),
+                "doctor": doctor["name"],
+                "email_address": TEST_EMAIL,
+                "mapping": mapping,
+                "result": "SENT",
+                "notes": "ТЕСТ",
+            }])
+        except Exception as exc:
+            print(f"⚠️ Не удалось записать тест в журнал: {exc}")
+            return False
+    return True
