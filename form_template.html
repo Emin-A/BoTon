@@ -175,6 +175,7 @@
         const BOTON_ID = "{{BOTON_ID}}";
         const DOCTOR_NAME = "{{DOCTOR_NAME}}";
         const DATE = "{{DATE}}";
+        const TO_EMAIL = "{{TO_EMAIL}}";
         const PATIENTS = {{PATIENTS_JSON}};
         const answers = {};
 
@@ -241,15 +242,14 @@
             PATIENTS.forEach(patient => {
                 patient.tasks.forEach(task => {
                     const status = answers[task.key];
-                    const statusText = status === 'done' ? '[x]' : '[x]';
+                    const statusText = '[x]';
                     const statusLabel = status === 'done' ? 'отработано' : 'консультация не состоялась';
                     body += `${statusText} ${task.key} — ${statusLabel}\n`;
                 });
             });
             const encodedBody = encodeURIComponent(body);
             const subject = encodeURIComponent(`Re: Задания для пациентов на ${DATE} [BOTON-ID:${BOTON_ID}]`);
-            const toEmail = 'agaverdiev@yandex.ru';
-            window.location.href = `mailto:${toEmail}?subject=${subject}&body=${encodedBody}`;
+            window.location.href = `mailto:${TO_EMAIL}?subject=${subject}&body=${encodedBody}`;
             setTimeout(() => {
                 alert('Почтовый клиент открыт. Нажмите "Отправить" в вашем почтовом приложении.');
             }, 500);
