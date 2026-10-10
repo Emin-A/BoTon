@@ -1,0 +1,62 @@
+name: BoTon - Рассылка заданий
+
+on:
+  # Ручной запуск с кнопками (Actions → Run workflow)
+  workflow_dispatch:
+    inputs:
+      force_resend:
+        description: 'Повторная отправка (FORCE_RESEND)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      test_to_reserve:
+        description: 'Тестовый режим (TEST_TO_RESERVE)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+  # Автозапуск по расписанию: будни в 08:00 МСК (05:00 UTC).
+  # Раскомментируйте эти 2 строки, когда рассылка будет полностью проверена:
+  # schedule:
+  #   - cron: '0 5 * * 1-5'
+
+jobs:
+  send-assignments:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create credentials.json from secret
+        run: echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT }}' > credentials.json
+
+      - name: Run BoTon
+        run: python main.py
+        env:
+          FORCE_RESEND: ${{ github.event.inputs.force_resend }}
+          TEST_TO_RESERVE: ${{ github.event.inputs.test_to_reserve }}
+          # Почтовые секреты передаём в скрипт
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_FROM_EMAIL: ${{ secrets.SMTP_FROM_EMAIL }}
+          IMAP_HOST: ${{ secrets.IMAP_HOST }}
+          IMAP_PORT: ${{ secrets.IMAP_PORT }}
+          IMAP_USER: ${{ secrets.IMAP_USER }}
+          IMAP_PASSWORD: ${{ secrets.IMAP_PASSWORD }}
