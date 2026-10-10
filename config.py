@@ -6,9 +6,11 @@ from zoneinfo import ZoneInfo
 VERSION = "3.3"
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
+
 def _env_flag(name):
     """True, только если переменная окружения равна 'true'."""
     return os.environ.get(name, "").strip().lower() == "true"
+
 
 # Режимы запуска через GitHub Actions (кнопки Run workflow)
 FORCE_RESEND = _env_flag("FORCE_RESEND")
@@ -63,7 +65,7 @@ STATUS_PRIORITY = {
     "✅ Выполнено": 3,
 }
 
-# Ключевые слова филиала (БЕЗ пробелов в конце!)
+# Ключевые слова филиала (БЕЗ пробелов!)
 BRANCH_KEYWORDS = [
     "ф2",
     "филиал 2",
@@ -77,7 +79,7 @@ BRANCH_KEYWORDS = [
 # Буквы заданий (БЕЗ пробелов!)
 TASK_LETTERS = ["А", "Б", "В"]
 
-# Названия заданий (БЕЗ пробелов в конце!)
+# Названия заданий (БЕЗ пробелов!)
 TASK_TITLES = {
     1: "Задание 1 (липиды)",
     2: "Задание 2 (КДП — выгрузка)",
