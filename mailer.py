@@ -12,18 +12,23 @@ from doctors import find_doctor_robust
 from log_store import append_log_entries
 
 
-def build_email_body(doctor, patients, bot_id):
-    """Plain-text версия письма."""
+def _get_address_name(doctor):
+    """Возвращает обращение к врачу: 'Имя Отчество'."""
     normalized = normalize_text(doctor["name"])
     parts = normalized.split()
     first = parts[1].capitalize() if len(parts) >= 2 else ""
     patr = parts[2].capitalize() if len(parts) >= 3 else ""
     if first and patr:
-        address = f"{first} {patr}"
+        return f"{first} {patr}"
     elif first:
-        address = first
-    else:
-        address = doctor["name"]
+        return first
+    return doctor["name"]
+
+
+def build_email_body(doctor, patients, bot_id):
+    """Plain-text версия письма."""
+    address = _get_address_name(doctor)
+    resend_mark = " (ПОВТОРНАЯ ОТПРАВКА)" if FORCE_RESEND else ""
 
     lines = [
         f"Здравствуйте, {address}!",
@@ -37,6 +42,9 @@ def build_email_body(doctor, patients, bot_id):
         "3) Если консультация не состоялась, отметьте строку «консультация не состоялась».",
         "4) Что не отмечено, считается не отработанным.",
         "5) Не удаляйте из письма номера пациентов и строку BOTON-ID.",
+        "",
+        "ИЛИ ЗАПОЛНИТЕ УДОБНУЮ ФОРМУ (приложена к письму):",
+        "Откройте файл отчёт.html в браузере, нажмите кнопки и отправьте ответ.",
         "",
         "=" * 50,
         "",
@@ -61,7 +69,6 @@ def build_email_body(doctor, patients, bot_id):
             lines.append(f"   [ ] {pnum} — все задания отработаны")
         lines.append("")
 
-    resend_mark = " (ПОВТОРНАЯ ОТПРАВКА)" if FORCE_RESEND else ""
     lines.extend([
         "=" * 50,
         f"BOTON-ID: {bot_id}{resend_mark}",
@@ -107,8 +114,8 @@ def build_doctor_form_html(doctor, patients, bot_id, target_date, to_email):
     return html
 
 
-def send_email(to_email, subject, body, html_body=None, attachments=None):
-    """Отправка письма. Поддерживает HTML и вложения."""
+def send_email(to_email, subject, body, attachments=None):
+    """Отправка письма. Поддерживает вложения (HTML-формы)."""
     host = os.environ["SMTP_HOST"]
     port = int(os.environ["SMTP_PORT"])
     user = os.environ["SMTP_USER"]
@@ -122,12 +129,7 @@ def send_email(to_email, subject, body, html_body=None, attachments=None):
     msg["From"] = from_email
     msg["To"] = to_email
     msg["Subject"] = subject
-
-    if html_body:
-        msg.set_content(body, subtype="plain", charset="utf-8")
-        msg.add_alternative(html_body, subtype="html", charset="utf-8")
-    else:
-        msg.set_content(body, subtype="plain", charset="utf-8")
+    msg.set_content(body, subtype="plain", charset="utf-8")
 
     # Добавляем вложения через MIMEText (правильный способ для Python 3.11+)
     if attachments:
@@ -213,7 +215,7 @@ def send_doctor_diagnostic(rows, doctors, target_date, log_sheet=None):
     try:
         send_email(TEST_EMAIL, subject, body, attachments=attachments)
     except Exception as exc:
-        print(f" ОШИБКА ТЕСТОВОЙ ОТПРАВКИ: {exc}")
+        print(f"❌ ОШИБКА ТЕСТОВОЙ ОТПРАВКИ: {exc}")
         return False
 
     print("✅ ТЕСТОВОЕ ПИСЬМО ОТПРАВЛЕНО (с формой)")
