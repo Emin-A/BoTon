@@ -83,13 +83,13 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
 
         body = build_email_body(doctor, patients, bot_id)
 
-        # Генерируем офлайн-форму для каждого врача
+        # Генерируем XHTML-форму для каждого врача
         form_html = build_doctor_form_html(
             doctor, patients, bot_id, target_date, email_addr
         )
         attachments = []
         if form_html:
-            form_filename = f"otchet_{target_date.strftime('%d.%m.%Y')}.html"
+            form_filename = f"otchet_{target_date.strftime('%d.%m.%Y')}.xhtml"
             attachments.append((form_filename, form_html))
 
         prepared.append({
@@ -124,7 +124,7 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
             f"Врачей в тесте: {len(prepared)}",
             "Все задания идут на резервную почту, реальным врачам не отправляются.",
             "",
-            "К каждому врачу приложена отдельная HTML-форма (otchet_*.html).",
+            "К каждому врачу приложена отдельная XHTML-форма (otchet_*.xhtml).",
             "Откройте форму в браузере, отметьте задания и нажмите «Отправить».",
             "",
             "=" * 60,
@@ -142,7 +142,6 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
             parts.append("")
             parts.append("=" * 60)
             parts.append("")
-            # Собираем все формы в одно сводное письмо
             if p["attachments"]:
                 all_attachments.extend(p["attachments"])
 
