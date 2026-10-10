@@ -44,7 +44,7 @@ def build_email_body(doctor, patients, bot_id):
         "5) Не удаляйте из письма номера пациентов и строку BOTON-ID.",
         "",
         "ИЛИ ЗАПОЛНИТЕ УДОБНУЮ ФОРМУ (приложена к письму):",
-        "Откройте файл отчёт.html в браузере, нажмите кнопки и отправьте ответ.",
+        "Откройте файл отчёт.xhtml в браузере, нажмите кнопки и отправьте ответ.",
         "",
         "=" * 50,
         "",
@@ -79,7 +79,7 @@ def build_email_body(doctor, patients, bot_id):
 
 
 def build_doctor_form_html(doctor, patients, bot_id, target_date, to_email):
-    """Генерирует персональный HTML-файл с формой для врача (офлайн)."""
+    """Генерирует персональный XHTML-файл с формой для врача (офлайн)."""
     template_path = os.path.join(os.path.dirname(__file__), "form_template.html")
 
     if not os.path.exists(template_path):
@@ -115,7 +115,7 @@ def build_doctor_form_html(doctor, patients, bot_id, target_date, to_email):
 
 
 def send_email(to_email, subject, body, attachments=None):
-    """Отправка письма. Поддерживает вложения (HTML-формы)."""
+    """Отправка письма. Поддерживает вложения (XHTML-формы)."""
     host = os.environ.get("SMTP_HOST", "")
     port = int(os.environ.get("SMTP_PORT", "465"))
     user = os.environ.get("SMTP_USER", "")
@@ -127,7 +127,6 @@ def send_email(to_email, subject, body, attachments=None):
     if not host or not user or not password:
         raise RuntimeError("Не настроены SMTP_HOST/SMTP_USER/SMTP_PASSWORD")
 
-    # MIMEMultipart — всегда работает с вложениями
     msg = MIMEMultipart()
     msg["From"] = from_email
     msg["To"] = to_email
@@ -193,13 +192,12 @@ def send_doctor_diagnostic(rows, doctors, target_date, log_sheet=None):
 
     body = header + build_email_body(doctor, patients, bot_id)
 
-    # Генерируем форму и прикладываем к письму
     form_html = build_doctor_form_html(
         doctor, patients, bot_id, target_date, TEST_EMAIL
     )
     attachments = []
     if form_html:
-        form_filename = f"otchet_{target_date.strftime('%d.%m.%Y')}.html"
+        form_filename = f"otchet_{target_date.strftime('%d.%m.%Y')}.xhtml"
         attachments.append((form_filename, form_html))
 
     print("\n--- ИНФОРМАЦИЯ О ПИСЬМЕ ---")
