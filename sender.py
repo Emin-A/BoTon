@@ -64,7 +64,7 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
         if TEST_TO_RESERVE:
             subject = f"[ТЕСТ ВРАЧА: {doctor['name']}] Задания на {target_date.strftime('%d.%m.%Y')}{test_mark}"
         else:
-            subject = f"Задания на {target_date.strftime('%d.%m.%Y')}{resend_mark} [BOTON-ID:{bot_id}]"
+            subject = f"Задания для пациентов на {target_date.strftime('%d.%m.%Y')}{resend_mark} [BOTON-ID:{bot_id}]"
         body = build_email_body(doctor, patients, bot_id)
         prepared.append({
             "doctor": doctor,
