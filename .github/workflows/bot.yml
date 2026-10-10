@@ -1,7 +1,6 @@
 name: BoTon - Рассылка заданий
 
 on:
-  # Ручной запуск с кнопками (Actions → Run workflow)
   workflow_dispatch:
     inputs:
       force_resend:
@@ -21,15 +20,9 @@ on:
           - 'true'
           - 'false'
 
-  # Автозапуск по расписанию: будни в 08:00 МСК (05:00 UTC).
-  # Раскомментируйте эти 2 строки, когда рассылка будет полностью проверена:
-  # schedule:
-  #   - cron: '0 5 * * 1-5'
-
 jobs:
   send-assignments:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -50,7 +43,6 @@ jobs:
         env:
           FORCE_RESEND: ${{ github.event.inputs.force_resend }}
           TEST_TO_RESERVE: ${{ github.event.inputs.test_to_reserve }}
-          # Почтовые секреты передаём в скрипт
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
