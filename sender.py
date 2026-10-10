@@ -171,7 +171,7 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
         email_addr = p["email"]
         is_reserve = p["is_reserve"]
         try:
-            send_email(email_addr, p["subject"], p["body"])
+            send_email(email_addr, p["subject"], p["body"], p.get("html_body"), p.get("attachments"))
             notes = "ПОВТОРНАЯ ОТПРАВКА" if FORCE_RESEND else ""
             sent_logs.append({
                 "event": "SEND",
