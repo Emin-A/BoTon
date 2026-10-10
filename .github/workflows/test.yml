@@ -1,60 +1,46 @@
-name: BoTon
+name: BoTon - Рассылка заданий
 
 on:
-  schedule:
-    - cron: '0,30 * * * *'
   workflow_dispatch:
     inputs:
       force_resend:
-        description: 'Принудительная повторная рассылка'
-        type: boolean
-        default: false
+        description: 'Повторная отправка (FORCE_RESEND)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
       test_to_reserve:
-        description: 'Тест: сводное письмо на резервную почту'
-        type: boolean
-        default: false
-      test_receive_only:
-        description: 'Только приём ответов'
-        type: boolean
-        default: false
-
-concurrency:
-  group: boton
-  cancel-in-progress: false
-
-permissions:
-  contents: read
+        description: 'Тестовый режим (TEST_TO_RESERVE)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
 
 jobs:
-  run-boton:
+  send-assignments:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+
     steps:
-      - name: Получить код
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Установить Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: pip
 
-      - name: Установить библиотеки
+      - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Запустить BOTON
-        env:
-          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
-          SMTP_HOST: ${{ secrets.SMTP_HOST }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
-          SMTP_USER: ${{ secrets.SMTP_USER }}
-          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-          SMTP_FROM_EMAIL: ${{ secrets.SMTP_FROM_EMAIL }}
-          IMAP_HOST: ${{ secrets.IMAP_HOST }}
-          IMAP_PORT: ${{ secrets.IMAP_PORT }}
-          IMAP_USER: ${{ secrets.IMAP_USER }}
-          IMAP_PASSWORD: ${{ secrets.IMAP_PASSWORD }}
-          FORCE_RESEND: ${{ inputs.force_resend }}
-          TEST_TO_RESERVE: ${{ inputs.test_to_reserve }}
-          TEST_RECEIVE_ONLY: ${{ inputs.test_receive_only }}
+      - name: Create credentials.json from secret
+        run: echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT }}' > credentials.json
+
+      - name: Run BoTon
         run: python main.py
+        env:
+          FORCE_RESEND: ${{ github.event.inputs.force_resend }}
+          TEST_TO_RESERVE: ${{ github.event.inputs.test_to_reserve }}
