@@ -6,11 +6,10 @@ from tasks import group_by_doctor, build_patients, build_response_task_map, make
 from doctors import find_doctor_robust
 from log_store import load_log_records, get_send_state, append_log_entries
 from google_sheets import batch_update_cells
-from mailer import build_email_body, send_email
+from mailer import build_email_body, build_doctor_form_html, send_email
 
 
 def make_status_value(email_addr, is_resend, is_test, is_reserve):
-    """Формирует текст для столбца M."""
     ts = now_moscow().strftime("%d.%m.%Y %H:%M")
     marks = []
     if is_test:
@@ -84,6 +83,15 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
 
         body = build_email_body(doctor, patients, bot_id)
 
+        # Генерируем офлайн-форму для каждого врача
+        form_html = build_doctor_form_html(
+            doctor, patients, bot_id, target_date, email_addr
+        )
+        attachments = []
+        if form_html:
+            form_filename = f"otchet_{target_date.strftime('%d.%m.%Y')}.html"
+            attachments.append((form_filename, form_html))
+
         prepared.append({
             "doctor": doctor,
             "doctor_rows": doctor_rows,
@@ -92,13 +100,14 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
             "email": email_addr,
             "subject": subject,
             "body": body,
+            "attachments": attachments,
             "is_reserve": is_reserve,
         })
 
     print(f"Подготовлено писем: {len(prepared)}")
 
     # ========================================================
-    # ТЕСТОВЫЙ РЕЖИМ: ОДНО СВОДНОЕ ПИСЬМО
+    # ТЕСТОВЫЙ РЕЖИМ: ОДНО СВОДНОЕ ПИСЬМО СО ВСЕМИ ФОРМАМИ
     # ========================================================
     if TEST_TO_RESERVE:
         if not prepared:
@@ -115,10 +124,14 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
             f"Врачей в тесте: {len(prepared)}",
             "Все задания идут на резервную почту, реальным врачам не отправляются.",
             "",
+            "К каждому врачу приложена отдельная HTML-форма (otchet_*.html).",
+            "Откройте форму в браузере, отметьте задания и нажмите «Отправить».",
+            "",
             "=" * 60,
             "",
         ]
         total_tasks = 0
+        all_attachments = []
         for idx, p in enumerate(prepared, start=1):
             total_tasks += sum(len(r["tasks"]) for r in p["doctor_rows"])
             parts.append(f"----- ПИСЬМО №{idx} ДЛЯ: {p['doctor']['name']} -----")
@@ -129,6 +142,9 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
             parts.append("")
             parts.append("=" * 60)
             parts.append("")
+            # Собираем все формы в одно сводное письмо
+            if p["attachments"]:
+                all_attachments.extend(p["attachments"])
 
         combined_body = "\n".join(parts)
         combined_subject = (
@@ -136,9 +152,9 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
             f"{target_date.strftime('%d.%m.%Y')} — BoTon v{VERSION}"
         )
         try:
-            send_email(REPORT_EMAIL, combined_subject, combined_body)
+            send_email(REPORT_EMAIL, combined_subject, combined_body, all_attachments)
             print(f"✅ ТЕСТОВОЕ СВОДНОЕ ПИСЬМО отправлено на {REPORT_EMAIL}")
-            print(f"   Содержит {len(prepared)} писем врачам")
+            print(f"   Содержит {len(prepared)} писем врачам и {len(all_attachments)} форм")
             return {
                 "doctors": len(prepared),
                 "rows": sum(len(p["doctor_rows"]) for p in prepared),
@@ -193,7 +209,7 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
         is_reserve = p["is_reserve"]
 
         try:
-            send_email(email_addr, p["subject"], p["body"])
+            send_email(email_addr, p["subject"], p["body"], p["attachments"])
             notes = "ПОВТОРНАЯ ОТПРАВКА" if FORCE_RESEND else ""
             sent_logs.append({
                 "event": "SEND",
