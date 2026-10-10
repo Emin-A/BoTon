@@ -151,6 +151,17 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
             f"{target_date.strftime('%d.%m.%Y')} — BoTon v{VERSION}"
         )
         try:
+           
+            # Диагностика: печатаем параметры письма
+            from_email = os.environ.get("SMTP_FROM_EMAIL", os.environ.get("SMTP_USER", "не задан"))
+            print(f"\n📧 ДИАГНОСТИКА ОТПРАВКИ:")
+            print(f"  FROM (от кого):   {from_email}")
+            print(f"  TO (кому):        {REPORT_EMAIL}")
+            print(f"  SUBJECT (тема):   {combined_subject}")
+            print(f"  Вложений:         {len(all_attachments)}")
+            print(f"  SMTP_HOST:        {os.environ.get('SMTP_HOST', 'не задан')}")
+            print(f"  SMTP_USER:        {os.environ.get('SMTP_USER', 'не задан')}")
+            print()
             send_email(REPORT_EMAIL, combined_subject, combined_body, all_attachments)
             print(f"✅ ТЕСТОВОЕ СВОДНОЕ ПИСЬМО отправлено на {REPORT_EMAIL}")
             print(f"   Содержит {len(prepared)} писем врачам и {len(all_attachments)} форм")
