@@ -3,7 +3,7 @@ import os
 import ssl
 import smtplib
 import json
-from email.message import EmailMessage
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from config import *
 from utils import normalize_text, now_moscow, get_signature
@@ -116,22 +116,24 @@ def build_doctor_form_html(doctor, patients, bot_id, target_date, to_email):
 
 def send_email(to_email, subject, body, attachments=None):
     """Отправка письма. Поддерживает вложения (HTML-формы)."""
-    host = os.environ["SMTP_HOST"]
-    port = int(os.environ["SMTP_PORT"])
-    user = os.environ["SMTP_USER"]
-    password = os.environ["SMTP_PASSWORD"]
+    host = os.environ.get("SMTP_HOST", "")
+    port = int(os.environ.get("SMTP_PORT", "465"))
+    user = os.environ.get("SMTP_USER", "")
+    password = os.environ.get("SMTP_PASSWORD", "")
     from_email = os.environ.get("SMTP_FROM_EMAIL", user)
 
     if not to_email:
         raise RuntimeError("Пустой получатель")
+    if not host or not user or not password:
+        raise RuntimeError("Не настроены SMTP_HOST/SMTP_USER/SMTP_PASSWORD")
 
-    msg = EmailMessage()
+    # MIMEMultipart — всегда работает с вложениями
+    msg = MIMEMultipart()
     msg["From"] = from_email
     msg["To"] = to_email
     msg["Subject"] = subject
-    msg.set_content(body, subtype="plain", charset="utf-8")
+    msg.attach(MIMEText(body, "plain", "utf-8"))
 
-    # Добавляем вложения через MIMEText (правильный способ для Python 3.11+)
     if attachments:
         for filename, content in attachments:
             part = MIMEText(content, "html", "utf-8")
@@ -213,7 +215,7 @@ def send_doctor_diagnostic(rows, doctors, target_date, log_sheet=None):
     )
 
     try:
-        send_email(TEST_EMAIL, subject, body, attachments=attachments)
+        send_email(TEST_EMAIL, subject, body, attachments)
     except Exception as exc:
         print(f"❌ ОШИБКА ТЕСТОВОЙ ОТПРАВКИ: {exc}")
         return False
