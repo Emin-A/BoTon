@@ -1,15 +1,19 @@
 """Чтение, фильтрация и подготовка заданий."""
-import re, hashlib
+import re
+import hashlib
 from collections import defaultdict
 from datetime import datetime
 from config import *
 from utils import normalize_text, parse_date, get_signature
 from google_sheets import sheets_call
+
+
 def is_branch_match(value):
     v = normalize_text(value)
     if not v:
         return False
     return any(k in v for k in BRANCH_KEYWORDS)
+
 
 def get_tasks_from_row(row, row_number):
     tasks = []
@@ -31,25 +35,29 @@ def get_tasks_from_row(row, row_number):
         })
     return tasks
 
+
 def load_task_rows(tasks_sheet, target_date):
     values = sheets_call(lambda: tasks_sheet.get_all_values(), "чтение заданий")
     rows = []
     stats = {
-        "total": 0, "empty": 0, "bad_date": 0, "other_date": 0,
-        "other_branch": 0, "already_processed": 0, "no_doctor": 0,
-        "no_tasks": 0, "selected": 0,
+        "total": 0,
+        "empty": 0,
+        "bad_date": 0,
+        "other_date": 0,
+        "other_branch": 0,
+        "already_processed": 0,
+        "no_doctor": 0,
+        "no_tasks": 0,
+        "selected": 0,
     }
-
     for row_number, row in enumerate(values[1:], start=2):
         stats["total"] += 1
         if not row or not any(str(x).strip() for x in row):
             stats["empty"] += 1
             continue
-
         row = list(row)
         while len(row) <= COL_COMPLETION:
             row.append("")
-
         date_value = parse_date(row[COL_DATE])
         if date_value is None:
             stats["bad_date"] += 1
@@ -60,23 +68,19 @@ def load_task_rows(tasks_sheet, target_date):
         if not is_branch_match(row[COL_BRANCH]):
             stats["other_branch"] += 1
             continue
-
         completion = str(row[COL_COMPLETION]).strip()
         if not FORCE_RESEND and not TEST_TO_RESERVE:
             if completion and completion.lower() not in ("null", "undefined"):
                 stats["already_processed"] += 1
                 continue
-
         doctor_name = str(row[COL_DOCTOR]).strip()
         if not doctor_name or doctor_name.lower() == "нет данных":
             stats["no_doctor"] += 1
             continue
-
         tasks = get_tasks_from_row(row, row_number)
         if not tasks:
             stats["no_tasks"] += 1
             continue
-
         rows.append({
             "row_number": row_number,
             "doctor_name": doctor_name,
@@ -86,8 +90,8 @@ def load_task_rows(tasks_sheet, target_date):
             "row": row,
         })
         stats["selected"] += 1
-
     return rows, stats
+
 
 def print_stats(stats):
     print("\n--- СТАТИСТИКА ПРОВЕРКИ СТРОК ---")
@@ -102,16 +106,18 @@ def print_stats(stats):
     print(f"ИТОГО ПОДОШЛО ДЛЯ ОТПРАВКИ: {stats['selected']}")
     print("-----------------------------------\n")
 
+
 def group_by_doctor(rows):
     grouped = defaultdict(list)
     for row in rows:
         grouped[normalize_text(row["doctor_name"])].append(row)
     return grouped
 
+
 def make_bot_id(target_date, doctor_signature, doctor_rows):
     parts = []
     for r in sorted(doctor_rows, key=lambda x: x["row_number"]):
-        nums = ",".join(str(t["task_number"]) for t in r["tasks"])
+        nums = ", ".join(str(t["task_number"]) for t in r["tasks"])
         parts.append(f"{r['row_number']}:{nums}")
     signature = (
         f"{target_date.strftime('%Y%m%d')}|"
@@ -121,6 +127,7 @@ def make_bot_id(target_date, doctor_signature, doctor_rows):
     digest = hashlib.sha256(signature.encode("utf-8")).hexdigest()[:10].upper()
     return f"BOTON-{target_date.strftime('%Y%m%d')}-{digest}"
 
+
 def build_patients(doctor_rows):
     return [{
         "patient_name": r["patient_name"],
@@ -128,6 +135,7 @@ def build_patients(doctor_rows):
         "row_number": r["row_number"],
         "tasks": r["tasks"],
     } for r in doctor_rows]
+
 
 def build_response_task_map(patients):
     mapping = defaultdict(list)

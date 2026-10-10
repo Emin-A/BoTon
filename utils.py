@@ -1,17 +1,21 @@
 """Общие функции нормализации и времени."""
 import re
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from config import MOSCOW_TZ, ASSIGNMENT_HOUR_START, ASSIGNMENT_HOUR_END
+
 
 def now_moscow():
     return datetime.now(MOSCOW_TZ)
 
+
 def today_str():
     return now_moscow().strftime("%d.%m.%Y")
+
 
 def is_assignment_time():
     t = now_moscow().time()
     return time(ASSIGNMENT_HOUR_START, 0) <= t <= time(ASSIGNMENT_HOUR_END, 0)
+
 
 def normalize_text(value):
     if value is None:
@@ -21,8 +25,10 @@ def normalize_text(value):
     value = re.sub(r"\s+", " ", value)
     return value.strip().lower()
 
+
 def normalize_email(value):
     return str(value or "").strip().lower()
+
 
 def get_signature(name):
     """ФИО → 'фамилия инициалы' (устойчиво к перестановкам и точкам)."""
@@ -36,15 +42,27 @@ def get_signature(name):
         return ""
     if len(parts) >= 2 and len(parts[0]) <= 2 and "." in parts[0]:
         surname = parts[-1].replace(".", "")
-        initials = "".join(p.replace(".", "")[0] for p in parts[:-1] if p.replace(".", ""))
+        initials = " ".join(p.replace(".", "")[0] for p in parts[:-1] if p.replace(".", ""))
     else:
         surname = parts[0].replace(".", "")
-        initials = "".join(p.replace(".", "")[0] for p in parts[1:] if p.replace(".", ""))
+        initials = " ".join(p.replace(".", "")[0] for p in parts[1:] if p.replace(".", ""))
     return f"{surname} {initials}".strip()
 
+
 def parse_date(value):
+    """Парсинг даты из строки, объекта datetime или числа (Google Sheets serial date)."""
     if value is None:
         return None
+    # Если Google Sheets вернул объект datetime
+    if isinstance(value, datetime):
+        return value.date()
+    # Если Google Sheets вернул число (serial date)
+    if isinstance(value, (int, float)):
+        try:
+            base = datetime(1899, 12, 30)
+            return (base + timedelta(days=value)).date()
+        except (ValueError, OverflowError, OSError):
+            return None
     s = str(value).strip()
     if not s:
         return None

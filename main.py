@@ -13,8 +13,6 @@ from config import (
     LOG_SHEET_NAME,
     SCOPES,
     SERVICE_ACCOUNT_FILE,
-    FORCE_RESEND,
-    TEST_TO_RESERVE,
 )
 from tasks import load_task_rows, print_stats
 from sender import send_today_assignments
@@ -34,33 +32,27 @@ def get_tasks_sheet_by_date(spreadsheet, target_date):
             sheet = spreadsheet.worksheet(TASKS_SHEET_NAME_FALLBACK)
             return sheet, TASKS_SHEET_NAME_FALLBACK
         except gspread.WorksheetNotFound:
-            print(f" Fallback-вкладка '{TASKS_SHEET_NAME_FALLBACK}' тоже не найдена!")
+            print(f"❌ Fallback-вкладка '{TASKS_SHEET_NAME_FALLBACK}' тоже не найдена!")
             sys.exit(1)
 
 
 def main():
-    # Авторизация в Google Sheets
     creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
     gc = gspread.authorize(creds)
 
-    # Сегодняшняя дата
     target_date = datetime.now().date()
     print(f"📅 Дата рассылки: {target_date.strftime('%d.%m.%Y')}")
 
-    # Таблица заданий
     tasks_spreadsheet = gc.open_by_key(TASKS_SPREADSHEET_ID)
     tasks_sheet, used_sheet_name = get_tasks_sheet_by_date(tasks_spreadsheet, target_date)
 
-    # Таблица врачей
     doctors_spreadsheet = gc.open_by_key(DOCTORS_SPREADSHEET_ID)
     doctors_sheet = doctors_spreadsheet.worksheet(DOCTORS_SHEET_NAME)
     doctors = load_doctors(doctors_sheet)
     print(f"👨‍⚕️ Загружено врачей: {len(doctors)}")
 
-    # Журнал
     log_sheet = tasks_spreadsheet.worksheet(LOG_SHEET_NAME)
 
-    # Загрузка строк
     rows, stats = load_task_rows(tasks_sheet, target_date)
     print_stats(stats)
 
@@ -68,7 +60,6 @@ def main():
         print("⚠️  Нет строк для отправки. Завершаю работу.")
         return
 
-    # Отправка
     result = send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date)
     print(f"\n🏁 Рассылка завершена. Результат: {result}")
 
