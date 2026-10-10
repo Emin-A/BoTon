@@ -1,6 +1,7 @@
 name: BoTon - Рассылка заданий
 
 on:
+  # Ручной запуск с кнопками (Actions → Run workflow)
   workflow_dispatch:
     inputs:
       force_resend:
