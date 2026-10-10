@@ -4,6 +4,7 @@ import ssl
 import smtplib
 import json
 from email.message import EmailMessage
+from email.mime.text import MIMEText
 from config import *
 from utils import normalize_text, now_moscow, get_signature
 from tasks import build_patients, make_bot_id, group_by_doctor, build_response_task_map
@@ -36,9 +37,6 @@ def build_email_body(doctor, patients, bot_id):
         "3) Если консультация не состоялась, отметьте строку «консультация не состоялась».",
         "4) Что не отмечено, считается не отработанным.",
         "5) Не удаляйте из письма номера пациентов и строку BOTON-ID.",
-        "",
-        "ИЛИ ЗАПОЛНИТЕ УДОБНУЮ ФОРМУ (приложена к письму):",
-        "Откройте файл отчёт.html в браузере, нажмите кнопки и отправьте ответ.",
         "",
         "=" * 50,
         "",
@@ -109,8 +107,8 @@ def build_doctor_form_html(doctor, patients, bot_id, target_date, to_email):
     return html
 
 
-def send_email(to_email, subject, body, attachments=None):
-    """Отправка письма. Поддерживает вложения (HTML-формы)."""
+def send_email(to_email, subject, body, html_body=None, attachments=None):
+    """Отправка письма. Поддерживает HTML и вложения."""
     host = os.environ["SMTP_HOST"]
     port = int(os.environ["SMTP_PORT"])
     user = os.environ["SMTP_USER"]
@@ -124,17 +122,19 @@ def send_email(to_email, subject, body, attachments=None):
     msg["From"] = from_email
     msg["To"] = to_email
     msg["Subject"] = subject
-    msg.set_content(body, subtype="plain", charset="utf-8")
 
+    if html_body:
+        msg.set_content(body, subtype="plain", charset="utf-8")
+        msg.add_alternative(html_body, subtype="html", charset="utf-8")
+    else:
+        msg.set_content(body, subtype="plain", charset="utf-8")
+
+    # Добавляем вложения через MIMEText (правильный способ для Python 3.11+)
     if attachments:
         for filename, content in attachments:
-            msg.add_attachment(
-                content,
-                maintype="text",
-                subtype="html",
-                filename=filename,
-                charset="utf-8",
-            )
+            part = MIMEText(content, "html", "utf-8")
+            part.add_header("Content-Disposition", "attachment", filename=filename)
+            msg.attach(part)
 
     ctx = ssl.create_default_context()
     with smtplib.SMTP_SSL(host, port, context=ctx, timeout=30) as s:
@@ -211,9 +211,9 @@ def send_doctor_diagnostic(rows, doctors, target_date, log_sheet=None):
     )
 
     try:
-        send_email(TEST_EMAIL, subject, body, attachments)
+        send_email(TEST_EMAIL, subject, body, attachments=attachments)
     except Exception as exc:
-        print(f"❌ ОШИБКА ТЕСТОВОЙ ОТПРАВКИ: {exc}")
+        print(f" ОШИБКА ТЕСТОВОЙ ОТПРАВКИ: {exc}")
         return False
 
     print("✅ ТЕСТОВОЕ ПИСЬМО ОТПРАВЛЕНО (с формой)")
