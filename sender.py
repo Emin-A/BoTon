@@ -67,7 +67,7 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
         email_addr = normalize_email(doctor["email"])
         is_reserve = False
         if TEST_TO_RESERVE:
-            email_addr = TEST_EMAIL
+            email_addr = REPORT_EMAIL
             is_reserve = True
         elif not email_addr:
             email_addr = REPORT_EMAIL
