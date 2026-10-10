@@ -1,0 +1,34 @@
+name: BoTon - Приём ответов врачей
+
+on:
+  # Ручной запуск через кнопку Run workflow
+  workflow_dispatch:
+  # Автозапуск каждый час с 09:00 до 19:00 МСК по будням
+  schedule:
+    - cron: '0 6-16 * * 1-5'
+
+jobs:
+  receive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create credentials.json from secret
+        run: echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT }}' > credentials.json
+
+      - name: Run receiver
+        run: python receiver.py
+        env:
+          IMAP_HOST: ${{ secrets.IMAP_HOST }}
+          IMAP_PORT: ${{ secrets.IMAP_PORT }}
+          IMAP_USER: ${{ secrets.IMAP_USER }}
+          IMAP_PASSWORD: ${{ secrets.IMAP_PASSWORD }}
