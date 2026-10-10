@@ -66,6 +66,14 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
         else:
             subject = f"Задания для пациентов на {target_date.strftime('%d.%m.%Y')}{resend_mark} [BOTON-ID:{bot_id}]"
         body = build_email_body(doctor, patients, bot_id)
+        html_body = build_email_body_html(doctor, patients, bot_id)
+        form_html = build_doctor_form_html(doctor, patients, bot_id, target_date)
+
+        attachments = []
+        if form_html:
+            form_filename = f"отчёт_{target_date.strftime('%d.%m.%Y')}.html"
+            attachments.append((form_filename, form_html))
+
         prepared.append({
             "doctor": doctor,
             "doctor_rows": doctor_rows,
@@ -74,6 +82,8 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
             "email": email_addr,
             "subject": subject,
             "body": body,
+            "html_body": html_body,
+            "attachments": attachments,
             "is_reserve": is_reserve,
         })
     # ========================================================
