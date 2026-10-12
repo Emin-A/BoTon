@@ -21,6 +21,10 @@ on:
           - 'true'
           - 'false'
 
+  # Автозапуск по расписанию: каждый день в 08:00 МСК (= 05:00 UTC)
+  schedule:
+    - cron: '0 5 * * *'
+
 jobs:
   send-assignments:
     runs-on: ubuntu-latest
@@ -42,8 +46,8 @@ jobs:
       - name: Run BoTon
         run: python main.py
         env:
-          FORCE_RESEND: ${{ github.event.inputs.force_resend }}
-          TEST_TO_RESERVE: ${{ github.event.inputs.test_to_reserve }}
+          FORCE_RESEND: ${{ github.event.inputs.force_resend || 'false' }}
+          TEST_TO_RESERVE: ${{ github.event.inputs.test_to_reserve || 'false' }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
