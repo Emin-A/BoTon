@@ -23,7 +23,6 @@ def make_status_value(email_addr, is_resend, is_test, is_reserve):
 
 
 def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
-    """Основная функция отправки писем врачам."""
     print("\n----- ОТПРАВКА ПИСЕМ ВРАЧАМ -----")
     if not rows:
         print("Нет строк для обработки.")
@@ -67,10 +66,8 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
         email_addr = normalize_email(doctor["email"])
         is_reserve = False
         if TEST_TO_RESERVE:
-            email_addr = REPORT_EMAIL
             is_reserve = True
         elif not email_addr:
-            email_addr = REPORT_EMAIL
             is_reserve = True
 
         resend_mark = " (ПОВТОРНО)" if FORCE_RESEND else ""
@@ -83,9 +80,8 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
 
         body = build_email_body(doctor, patients, bot_id)
 
-        # Генерируем XHTML-форму для каждого врача
         form_html = build_doctor_form_html(
-            doctor, patients, bot_id, target_date, email_addr
+            doctor, patients, bot_id, target_date, email_addr or RESERVE_EMAILS[0]
         )
         attachments = []
         if form_html:
@@ -107,7 +103,7 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
     print(f"Подготовлено писем: {len(prepared)}")
 
     # ========================================================
-    # ТЕСТОВЫЙ РЕЖИМ: ОДНО СВОДНОЕ ПИСЬМО СО ВСЕМИ ФОРМАМИ
+    # ТЕСТОВЫЙ РЕЖИМ: ОДНО СВОДНОЕ ПИСЬМО НА ВСЕ РЕЗЕРВНЫЕ АДРЕСА
     # ========================================================
     if TEST_TO_RESERVE:
         if not prepared:
@@ -151,19 +147,10 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
             f"{target_date.strftime('%d.%m.%Y')} — BoTon v{VERSION}"
         )
         try:
-           
-            # Диагностика: печатаем параметры письма
-            from_email = os.environ.get("SMTP_FROM_EMAIL", os.environ.get("SMTP_USER", "не задан"))
-            print(f"\n📧 ДИАГНОСТИКА ОТПРАВКИ:")
-            print(f"  FROM (от кого):   {from_email}")
-            print(f"  TO (кому):        {REPORT_EMAIL}")
-            print(f"  SUBJECT (тема):   {combined_subject}")
-            print(f"  Вложений:         {len(all_attachments)}")
-            print(f"  SMTP_HOST:        {os.environ.get('SMTP_HOST', 'не задан')}")
-            print(f"  SMTP_USER:        {os.environ.get('SMTP_USER', 'не задан')}")
-            print()
-            send_email(REPORT_EMAIL, combined_subject, combined_body, all_attachments)
-            print(f"✅ ТЕСТОВОЕ СВОДНОЕ ПИСЬМО отправлено на {REPORT_EMAIL}")
+            # Отправляем на ВСЕ резервные адреса
+            for reserve_addr in RESERVE_EMAILS:
+                send_email(reserve_addr, combined_subject, combined_body, all_attachments)
+                print(f"✅ ТЕСТОВОЕ СВОДНОЕ ПИСЬМО отправлено на {reserve_addr}")
             print(f"   Содержит {len(prepared)} писем врачам и {len(all_attachments)} форм")
             return {
                 "doctors": len(prepared),
@@ -196,7 +183,7 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
         "bot_id": p["bot_id"],
         "target_date": target_date.strftime("%d.%m.%Y"),
         "doctor": p["doctor"]["name"],
-        "email_address": p["email"],
+        "email_address": p["email"] or ",".join(RESERVE_EMAILS),
         "mapping": p["mapping"],
         "result": "PENDING",
         "notes": "ПОВТОРНАЯ ОТПРАВКА" if FORCE_RESEND else "",
@@ -219,20 +206,27 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
         is_reserve = p["is_reserve"]
 
         try:
-            send_email(email_addr, p["subject"], p["body"], p["attachments"])
+            if is_reserve:
+                # Резервная отправка — на ВСЕ адреса из RESERVE_EMAILS
+                for reserve_addr in RESERVE_EMAILS:
+                    send_email(reserve_addr, p["subject"], p["body"], p["attachments"])
+                    print(f"✅ Резерв: {doctor['name']} -> {reserve_addr}")
+            else:
+                send_email(email_addr, p["subject"], p["body"], p["attachments"])
+
             notes = "ПОВТОРНАЯ ОТПРАВКА" if FORCE_RESEND else ""
             sent_logs.append({
                 "event": "SEND",
                 "bot_id": bot_id,
                 "target_date": target_date.strftime("%d.%m.%Y"),
                 "doctor": doctor["name"],
-                "email_address": email_addr,
+                "email_address": email_addr or ",".join(RESERVE_EMAILS),
                 "mapping": p["mapping"],
                 "result": "SENT",
                 "notes": notes,
             })
 
-            status = make_status_value(email_addr, FORCE_RESEND, False, is_reserve)
+            status = make_status_value(email_addr or "резерв", FORCE_RESEND, False, is_reserve)
             for r in p["doctor_rows"]:
                 m_updates.append({
                     "row": r["row_number"],
@@ -253,12 +247,12 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
                 "bot_id": bot_id,
                 "target_date": target_date.strftime("%d.%m.%Y"),
                 "doctor": doctor["name"],
-                "email_address": email_addr,
+                "email_address": email_addr or ",".join(RESERVE_EMAILS),
                 "mapping": p["mapping"],
                 "result": "ERROR",
                 "notes": str(exc),
             })
-            print(f"❌ Ошибка отправки {doctor['name']}: {exc}")
+            print(f" Ошибка отправки {doctor['name']}: {exc}")
 
     if sent_logs or error_logs:
         print(f"BoTon_Log: пакетная запись SENT/ERROR ({len(sent_logs) + len(error_logs)})")
