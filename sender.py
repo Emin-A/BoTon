@@ -162,3 +162,134 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
                 "not_found": not_found,
             }
         except Exception as exc:
+            print(f"❌ ОШИБКА ТЕСТОВОЙ ОТПРАВКИ: {exc}")
+            return {
+                "doctors": 0, "rows": 0, "tasks": 0, "errors": 1,
+                "skipped": skipped_logged, "reserve": 0, "not_found": not_found,
+            }
+
+    # ========================================================
+    # БОЕВОЙ РЕЖИМ
+    # ========================================================
+    if not prepared:
+        print("Нет писем для отправки.")
+        return {
+            "doctors": 0, "rows": 0, "tasks": 0, "errors": 0,
+            "skipped": skipped_logged, "reserve": 0, "not_found": not_found,
+        }
+
+    pending = [{
+        "event": "SEND",
+        "bot_id": p["bot_id"],
+        "target_date": target_date.strftime("%d.%m.%Y"),
+        "doctor": p["doctor"]["name"],
+        "email_address": p["email"] or ",".join(RESERVE_EMAILS),
+        "mapping": p["mapping"],
+        "result": "PENDING",
+        "notes": "ПОВТОРНАЯ ОТПРАВКА" if FORCE_RESEND else "",
+    } for p in prepared]
+    print(f"BoTon_Log: пакетная запись PENDING ({len(pending)})")
+    append_log_entries(log_sheet, pending)
+
+    sent_logs = []
+    error_logs = []
+    m_updates = []
+    successful_doctors = 0
+    total_tasks = 0
+    reserve_sent = 0
+    errors = 0
+
+    for p in prepared:
+        doctor = p["doctor"]
+        bot_id = p["bot_id"]
+        email_addr = p["email"]
+        is_reserve = p["is_reserve"]
+
+        try:
+            # === ДИАГНОСТИКА: печатаем параметры письма ===
+            from_email = os.environ.get("SMTP_FROM_EMAIL", os.environ.get("SMTP_USER", "не задан"))
+            print(f"\n📧 ОТПРАВКА: {doctor['name']}")
+            print(f"  FROM (от кого):   {from_email}")
+            print(f"  TO (кому):        {email_addr}")
+            print(f"  SUBJECT (тема):   {p['subject']}")
+            print(f"  Вложений:         {len(p.get('attachments', []))}")
+            print(f"  SMTP_HOST:        {os.environ.get('SMTP_HOST', 'не задан')}")
+            print(f"  SMTP_USER:        {os.environ.get('SMTP_USER', 'не задан')}")
+            print(f"  SMTP_FROM_EMAIL:  {os.environ.get('SMTP_FROM_EMAIL', 'не задан')}")
+            print()
+            # === КОНЕЦ ДИАГНОСТИКИ ===
+
+            if is_reserve:
+                for reserve_addr in RESERVE_EMAILS:
+                    send_email(reserve_addr, p["subject"], p["body"], p["attachments"])
+                    print(f"✅ Резерв: {doctor['name']} -> {reserve_addr}")
+            else:
+                send_email(email_addr, p["subject"], p["body"], p["attachments"])
+
+            notes = "ПОВТОРНАЯ ОТПРАВКА" if FORCE_RESEND else ""
+            sent_logs.append({
+                "event": "SEND",
+                "bot_id": bot_id,
+                "target_date": target_date.strftime("%d.%m.%Y"),
+                "doctor": doctor["name"],
+                "email_address": email_addr or ",".join(RESERVE_EMAILS),
+                "mapping": p["mapping"],
+                "result": "SENT",
+                "notes": notes,
+            })
+
+            status = make_status_value(email_addr or "резерв", FORCE_RESEND, False, is_reserve)
+            for r in p["doctor_rows"]:
+                m_updates.append({
+                    "row": r["row_number"],
+                    "col": COL_COMPLETION + 1,
+                    "value": status,
+                })
+
+            successful_doctors += 1
+            total_tasks += sum(len(r["tasks"]) for r in p["doctor_rows"])
+            if is_reserve:
+                reserve_sent += 1
+            sleep(2)
+
+        except Exception as exc:
+            errors += 1
+            error_logs.append({
+                "event": "SEND",
+                "bot_id": bot_id,
+                "target_date": target_date.strftime("%d.%m.%Y"),
+                "doctor": doctor["name"],
+                "email_address": email_addr or ",".join(RESERVE_EMAILS),
+                "mapping": p["mapping"],
+                "result": "ERROR",
+                "notes": str(exc),
+            })
+            print(f"❌ Ошибка отправки {doctor['name']}: {exc}")
+
+    if sent_logs or error_logs:
+        print(f"BoTon_Log: пакетная запись SENT/ERROR ({len(sent_logs) + len(error_logs)})")
+        append_log_entries(log_sheet, sent_logs + error_logs)
+
+    if m_updates:
+        print(f"Лист: пакетная запись M ({len(m_updates)} строк)")
+        batch_update_cells(tasks_sheet, m_updates, "запись статусов M")
+
+    print("\nИТОГ РАССЫЛКИ:")
+    print(f"  Врачей обработано: {successful_doctors}")
+    print(f"  Успешно отправлено: {successful_doctors - errors}")
+    print(f"  Отправлено на резерв: {reserve_sent}")
+    print(f"  Пропущено по журналу: {skipped_logged}")
+    print(f"  Врач не найден: {not_found}")
+    print(f"  Ошибок: {errors}")
+    print(f"  Строк обновлено в M: {len(m_updates)}")
+    print(f"  Всего заданий: {total_tasks}")
+
+    return {
+        "doctors": successful_doctors,
+        "rows": len(m_updates),
+        "tasks": total_tasks,
+        "errors": errors,
+        "skipped": skipped_logged,
+        "reserve": reserve_sent,
+        "not_found": not_found,
+    }
