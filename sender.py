@@ -88,7 +88,7 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
             form_filename = f"otchet_{target_date.strftime('%d.%m.%Y')}.xhtml"
             attachments.append((form_filename, form_html))
 
-        prepared.append({
+        .append({
             "doctor": doctor,
             "doctor_rows": doctor_rows,
             "mapping": mapping,
@@ -100,24 +100,24 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
             "is_reserve": is_reserve,
         })
 
-    print(f"Подготовлено писем: {len(prepared)}")
+    print(f"Подготовлено писем: {len()}")
 
     # ========================================================
     # ТЕСТОВЫЙ РЕЖИМ: ОДНО СВОДНОЕ ПИСЬМО НА ВСЕ РЕЗЕРВНЫЕ АДРЕСА
     # ========================================================
     if TEST_TO_RESERVE:
-        if not prepared:
+        if not :
             print("Тестовый режим: нечего отправлять")
             return {
                 "doctors": 0, "rows": 0, "tasks": 0, "errors": 0,
                 "skipped": skipped_logged, "reserve": 0, "not_found": not_found,
             }
 
-        print(f"\nТестовый режим: формирую ОДНО письмо со всеми {len(prepared)} письмами врачам")
+        print(f"\nТестовый режим: формирую ОДНО письмо со всеми {len()} письмами врачам")
         parts = [
             f"ТЕСТОВЫЙ ПРОГОН BoTon v{VERSION}",
             f"Дата: {target_date.strftime('%d.%m.%Y')}",
-            f"Врачей в тесте: {len(prepared)}",
+            f"Врачей в тесте: {len()}",
             "Все задания идут на резервную почту, реальным врачам не отправляются.",
             "",
             "К каждому врачу приложена отдельная XHTML-форма (otchet_*.xhtml).",
@@ -128,7 +128,7 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
         ]
         total_tasks = 0
         all_attachments = []
-        for idx, p in enumerate(prepared, start=1):
+        for idx, p in enumerate(, start=1):
             total_tasks += sum(len(r["tasks"]) for r in p["doctor_rows"])
             parts.append(f"----- ПИСЬМО №{idx} ДЛЯ: {p['doctor']['name']} -----")
             parts.append(f"Кому (в боевом режиме): {p['doctor']['email'] or 'НЕТ EMAIL'}")
@@ -143,7 +143,7 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
 
         combined_body = "\n".join(parts)
         combined_subject = (
-            f"[ТЕСТ ВРАЧАМ] Сводка {len(prepared)} писем за "
+            f"[ТЕСТ ВРАЧАМ] Сводка {len()} писем за "
             f"{target_date.strftime('%d.%m.%Y')} — BoTon v{VERSION}"
         )
         try:
@@ -151,10 +151,10 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
             for reserve_addr in RESERVE_EMAILS:
                 send_email(reserve_addr, combined_subject, combined_body, all_attachments)
                 print(f"✅ ТЕСТОВОЕ СВОДНОЕ ПИСЬМО отправлено на {reserve_addr}")
-            print(f"   Содержит {len(prepared)} писем врачам и {len(all_attachments)} форм")
+            print(f"   Содержит {len()} писем врачам и {len(all_attachments)} форм")
             return {
-                "doctors": len(prepared),
-                "rows": sum(len(p["doctor_rows"]) for p in prepared),
+                "doctors": len(),
+                "rows": sum(len(p["doctor_rows"]) for p in ),
                 "tasks": total_tasks,
                 "errors": 0,
                 "skipped": skipped_logged,
@@ -206,13 +206,18 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
         is_reserve = p["is_reserve"]
 
         try:
-            if is_reserve:
-                # Резервная отправка — на ВСЕ адреса из RESERVE_EMAILS
-                for reserve_addr in RESERVE_EMAILS:
-                    send_email(reserve_addr, p["subject"], p["body"], p["attachments"])
-                    print(f"✅ Резерв: {doctor['name']} -> {reserve_addr}")
-            else:
-                send_email(email_addr, p["subject"], p["body"], p["attachments"])
+            # Диагностика: печатаем параметры письма
+            from_email = os.environ.get("SMTP_FROM_EMAIL", os.environ.get("SMTP_USER", "не задан"))
+            print(f"\n📧 ОТПРАВКА: {doctor['name']}")
+            print(f"  FROM (от кого):   {from_email}")
+            print(f"  TO (кому):        {email_addr}")
+           print(f"  SUBJECT (тема):   {p['subject']}")
+            print(f"  Вложений:         {len(p.get('attachments', []))}")
+            print(f"  SMTP_HOST:        {os.environ.get('SMTP_HOST', 'не задан')}")
+            print(f"  SMTP_USER:        {os.environ.get('SMTP_USER', 'не задан')}")
+            print()
+        
+            send_email(email_addr, p["subject"], p["body"], p["attachments"])
 
             notes = "ПОВТОРНАЯ ОТПРАВКА" if FORCE_RESEND else ""
             sent_logs.append({
