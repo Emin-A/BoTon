@@ -9,6 +9,7 @@ from config import (
     TASKS_SHEET_NAME_FALLBACK,
     DOCTORS_SPREADSHEET_ID,
     DOCTORS_SHEET_NAME,
+    LOG_SPREADSHEET_ID,
     LOG_SHEET_NAME,
     SCOPES,
     SERVICE_ACCOUNT_FILE,
@@ -36,11 +37,9 @@ def get_tasks_sheet_by_date(spreadsheet, target_date):
 
 
 def main():
-    # Авторизация в Google Sheets
     creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
     gc = gspread.authorize(creds)
 
-    # Сегодняшняя дата
     target_date = datetime.now().date()
     print(f"📅 Дата рассылки: {target_date.strftime('%d.%m.%Y')}")
 
@@ -52,10 +51,12 @@ def main():
     doctors_spreadsheet = gc.open_by_key(DOCTORS_SPREADSHEET_ID)
     doctors_sheet = doctors_spreadsheet.worksheet(DOCTORS_SHEET_NAME)
     doctors = load_doctors(doctors_sheet)
-    print(f"👨‍️ Загружено врачей: {len(doctors)}")
+    print(f"👨‍⚕️ Загружено врачей: {len(doctors)}")
 
-    # Журнал
-    log_sheet = tasks_spreadsheet.worksheet(LOG_SHEET_NAME)
+    # Журнал — в отдельной таблице
+    log_spreadsheet = gc.open_by_key(LOG_SPREADSHEET_ID)
+    log_sheet = log_spreadsheet.worksheet(LOG_SHEET_NAME)
+    print(f" Журнал открыт: {LOG_SPREADSHEET_ID} / {LOG_SHEET_NAME}")
 
     # Загрузка строк
     rows, stats = load_task_rows(tasks_sheet, target_date)
