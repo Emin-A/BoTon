@@ -66,28 +66,23 @@ def resolve_keys(digits, letter, mapping):
 def parse_reply(body, mapping):
     done = set()
     seen = False
-    
     for raw_line in body.splitlines():
         line = re.sub(r"^[\s>]+", "", raw_line)
         m = CHECKBOX_RE.match(line)
         if not m:
             continue
-        
         digits = str(int(m.group(2)))
         letter = (m.group(3) or "").upper()
         letter = LATIN_TO_CYR.get(letter, letter)
         keys = resolve_keys(digits, letter, mapping)
         if not keys:
             continue
-        
         mark = m.group(1)
         if mark:
             seen = True
             done.update(keys)
-
     if not seen:
         return None
-
     result = {}
     for key in mapping:
         if key in done:
@@ -137,7 +132,6 @@ def send_test_notice(bot_id, updated):
             lines.append("В таблицу в тестовом режиме ничего не записано.")
         lines.append(f"BOTON-ID: {bot_id}")
         body = "\n".join(lines)
-
     try:
         send_email(TEST_EMAIL, subject, body)
         print(f"Тест: результат разбора отправлен на {TEST_EMAIL}")
@@ -153,7 +147,7 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
     password = os.environ.get("IMAP_PASSWORD", "")
 
     print(f"\n{'=' * 60}")
-    print(f" ДИАГНОСТИКА IMAP-ПОДКЛЮЧЕНИЯ")
+    print(" ДИАГНОСТИКА IMAP-ПОДКЛЮЧЕНИЯ")
     print(f"{'=' * 60}")
     print(f"  IMAP_HOST:  {host}")
     print(f"  IMAP_PORT:  {port}")
@@ -174,28 +168,22 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
         print(f"IMAP: подключение к {host}:{port}...")
         mail = imaplib.IMAP4_SSL(host, port, timeout=IMAP_TIMEOUT)
         mail.login(user, password)
-        
-        # Проверяем доступные папки
         status, folders = mail.list()
-        print(f"\n📁 Доступные папки:")
-        for folder in folders[:10]:  # Первые 10 папок
+        print(f"\n Доступные папки:")
+        for folder in folders[:10]:
             print(f"   {folder.decode('utf-8', errors='replace')}")
         print()
-        
         status, _ = mail.select("INBOX", readonly=True)
         if status != "OK":
             print("IMAP: не удалось открыть INBOX")
             return 0
 
-        # Считаем общее количество писем в INBOX
         status, data = mail.search(None, "ALL")
         if status == "OK" and data[0]:
             all_emails = data[0].split()
             print(f"📊 Всего писем в INBOX: {len(all_emails)}")
-            
-            # Показываем последние 5 писем для диагностики
             if len(all_emails) > 0:
-                print(f"\n Последние 5 писем в INBOX:")
+                print(f"\n📬 Последние 5 писем в INBOX:")
                 for num in all_emails[-5:]:
                     st, msg_data = mail.fetch(num, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])")
                     if st == "OK" and msg_data[0]:
@@ -268,7 +256,7 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
                 subject = decode_mime_header(msg.get("Subject", ""))
                 body = extract_message_body(msg)
 
-                print(f"\n Обработка письма:")
+                print(f"\n📨 Обработка письма:")
                 print(f"   From: {from_header}")
                 print(f"   Subject: {subject}")
                 print(f"   Message-ID: {message_id}")
@@ -277,7 +265,7 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
                 sender_email = normalize_email(m.group(1) if m else from_header)
 
                 if sender_email != expected_email:
-                    print(f"   ️ Отправитель {sender_email} не совпадает с ожидаемым {expected_email}")
+                    print(f"   ⚠️ Отправитель {sender_email} не совпадает с ожидаемым {expected_email}")
                     continue
 
                 bot_id = extract_bot_id(subject, body)
@@ -435,7 +423,7 @@ if __name__ == "__main__":
         tasks_sheet = tasks_spreadsheet.worksheet(sheet_name)
         print(f"✅ Открыта вкладка: {sheet_name}")
     except gspread.WorksheetNotFound:
-        print(f"⚠️ Вкладка '{sheet_name}' не найдена. Используем fallback: '{TASKS_SHEET_NAME_FALLBACK}'")
+        print(f"️ Вкладка '{sheet_name}' не найдена. Используем fallback: '{TASKS_SHEET_NAME_FALLBACK}'")
         tasks_sheet = tasks_spreadsheet.worksheet(TASKS_SHEET_NAME_FALLBACK)
 
     log_spreadsheet = gc.open_by_key(LOG_SPREADSHEET_ID)
