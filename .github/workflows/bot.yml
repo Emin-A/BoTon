@@ -19,14 +19,6 @@ on:
         options:
           - 'true'
           - 'false'
-      disable_attachments:
-        description: 'Отключить вложения (для диагностики)'
-        required: false
-        default: 'false'
-        type: choice
-        options:
-          - 'true'
-          - 'false'
 
   schedule:
     - cron: '*/15 4-20 * * *'
@@ -54,7 +46,6 @@ jobs:
         env:
           FORCE_RESEND: ${{ github.event.inputs.force_resend || 'false' }}
           TEST_TO_RESERVE: ${{ github.event.inputs.test_to_reserve || 'false' }}
-          DISABLE_ATTACHMENTS: ${{ github.event.inputs.disable_attachments || 'false' }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
