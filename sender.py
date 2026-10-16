@@ -193,11 +193,34 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
 
     sent_logs = []
     error_logs = []
-    n_updates = []  # Отметки об отправке в колонку N
+    n_updates = []
     successful_doctors = 0
     total_tasks = 0
     reserve_sent = 0
     errors = 0
+
+    # === ГЛОБАЛЬНАЯ ДИАГНОСТИКА SMTP (один раз в начале) ===
+    smtp_host = os.environ.get("SMTP_HOST", "не задан")
+    smtp_user = os.environ.get("SMTP_USER", "не задан")
+    smtp_from = os.environ.get("SMTP_FROM_EMAIL", "не задан")
+    smtp_port = os.environ.get("SMTP_PORT", "не задан")
+    from_matches_user = (smtp_from == smtp_user)
+
+    print("\n" + "=" * 60)
+    print(" ДИАГНОСТИКА SMTP-НАСТРОЕК")
+    print("=" * 60)
+    print(f"  SMTP_HOST:           {smtp_host}")
+    print(f"  SMTP_PORT:           {smtp_port}")
+    print(f"  SMTP_USER (логин):   {smtp_user}")
+    print(f"  SMTP_FROM_EMAIL:     {smtp_from}")
+    print(f"  FROM == USER?        {from_matches_user}")
+    if not from_matches_user:
+        print(f"  ⚠️ ВНИМАНИЕ: Адрес отправителя (FROM) НЕ совпадает с логином (USER)!")
+        print(f"     Яндекс может молча отбрасывать такие письма.")
+        print(f"     Исправьте секрет SMTP_FROM_EMAIL в GitHub Settings → Secrets.")
+        print(f"     Он должен быть равен: {smtp_user}")
+    print("=" * 60 + "\n")
+    # === КОНЕЦ ГЛОБАЛЬНОЙ ДИАГНОСТИКИ ===
 
     for p in prepared:
         doctor = p["doctor"]
@@ -206,16 +229,14 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
         is_reserve = p["is_reserve"]
 
         try:
-            # === ДИАГНОСТИКА: печатаем параметры письма ===
-            from_email = os.environ.get("SMTP_FROM_EMAIL", os.environ.get("SMTP_USER", "не задан"))
+            # === ДИАГНОСТИКА КАЖДОГО ПИСЬМА ===
             print(f"\n📧 ОТПРАВКА: {doctor['name']}")
-            print(f"  FROM (от кого):   {from_email}")
-            print(f"  TO (кому):        {email_addr}")
-            print(f"  SUBJECT (тема):   {p['subject']}")
-            print(f"  Вложений:         {len(p.get('attachments', []))}")
-            print(f"  SMTP_HOST:        {os.environ.get('SMTP_HOST', 'не задан')}")
-            print(f"  SMTP_USER:        {os.environ.get('SMTP_USER', 'не задан')}")
-            print(f"  SMTP_FROM_EMAIL:  {os.environ.get('SMTP_FROM_EMAIL', 'не задан')}")
+            print(f"  FROM (от кого):      {smtp_from}")
+            print(f"  TO (кому):           {email_addr}")
+            print(f"  SUBJECT (тема):      {p['subject']}")
+            print(f"  Вложений:            {len(p.get('attachments', []))}")
+            if not from_matches_user:
+                print(f"  ⚠️ FROM != SMTP_USER — письмо может не дойти!")
             print()
             # === КОНЕЦ ДИАГНОСТИКИ ===
 
@@ -225,6 +246,7 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
                     print(f"✅ Резерв: {doctor['name']} -> {reserve_addr}")
             else:
                 send_email(email_addr, p["subject"], p["body"], p["attachments"])
+                print(f"✅ Отправлено: {doctor['name']} -> {email_addr}")
 
             notes = "ПОВТОРНАЯ ОТПРАВКА" if FORCE_RESEND else ""
             sent_logs.append({
@@ -238,12 +260,11 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
                 "notes": notes,
             })
 
-            # Запись отметки об отправке в колонку N (COL_COMPLETION = 13)
             status = make_status_value(email_addr or "резерв", FORCE_RESEND, False, is_reserve)
             for r in p["doctor_rows"]:
                 n_updates.append({
                     "row": r["row_number"],
-                    "col": COL_COMPLETION + 1,  # Google Sheets индексация с 1
+                    "col": COL_COMPLETION + 1,
                     "value": status,
                 })
 
