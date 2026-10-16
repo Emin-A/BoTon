@@ -7,11 +7,7 @@ from tasks import group_by_doctor, build_patients, build_response_task_map, make
 from doctors import find_doctor_robust
 from log_store import load_log_records, get_send_state, append_log_entries
 from google_sheets import batch_update_cells
-from mailer import build_email_body, build_doctor_form_html, send_email
-
-
-def _env_flag(name):
-    return os.environ.get(name, "").strip().lower() == "true"
+from mailer import build_email_body, send_email
 
 
 def make_status_value(email_addr, is_resend, is_test, is_reserve):
@@ -35,11 +31,6 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
             "doctors": 0, "rows": 0, "tasks": 0, "errors": 0,
             "skipped": 0, "reserve": 0, "not_found": 0,
         }
-
-    # Флаг отключения вложений (для диагностики)
-    disable_attachments = _env_flag("DISABLE_ATTACHMENTS")
-    if disable_attachments:
-        print("⚠️ ВЛОЖЕНИЯ ОТКЛЮЧЕНЫ через DISABLE_ATTACHMENTS=true")
 
     grouped = group_by_doctor(rows)
     records = load_log_records(log_sheet)
@@ -90,16 +81,6 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
 
         body = build_email_body(doctor, patients, bot_id)
 
-        # Генерируем вложение только если не отключено
-        attachments = []
-        if not disable_attachments:
-            form_html = build_doctor_form_html(
-                doctor, patients, bot_id, target_date, email_addr or RESERVE_EMAILS[0]
-            )
-            if form_html:
-                form_filename = f"otchet_{target_date.strftime('%d.%m.%Y')}.xhtml"
-                attachments.append((form_filename, form_html))
-
         prepared.append({
             "doctor": doctor,
             "doctor_rows": doctor_rows,
@@ -108,14 +89,13 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
             "email": email_addr,
             "subject": subject,
             "body": body,
-            "attachments": attachments,
             "is_reserve": is_reserve,
         })
 
     print(f"Подготовлено писем: {len(prepared)}")
 
     # ========================================================
-    # ТЕСТОВЫЙ РЕЖИМ
+    # ТЕСТОВЫЙ РЕЖИМ: ОДНО СВОДНОЕ ПИСЬМО НА ВСЕ РЕЗЕРВНЫЕ АДРЕСА
     # ========================================================
     if TEST_TO_RESERVE:
         if not prepared:
@@ -132,14 +112,10 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
             f"Врачей в тесте: {len(prepared)}",
             "Все задания идут на резервную почту, реальным врачам не отправляются.",
             "",
-            "К каждому врачу приложена отдельная XHTML-форма (otchet_*.xhtml).",
-            "Откройте форму в браузере, отметьте задания и нажмите «Отправить».",
-            "",
             "=" * 60,
             "",
         ]
         total_tasks = 0
-        all_attachments = []
         for idx, p in enumerate(prepared, start=1):
             total_tasks += sum(len(r["tasks"]) for r in p["doctor_rows"])
             parts.append(f"----- ПИСЬМО №{idx} ДЛЯ: {p['doctor']['name']} -----")
@@ -150,8 +126,6 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
             parts.append("")
             parts.append("=" * 60)
             parts.append("")
-            if p["attachments"]:
-                all_attachments.extend(p["attachments"])
 
         combined_body = "\n".join(parts)
         combined_subject = (
@@ -160,9 +134,9 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
         )
         try:
             for reserve_addr in RESERVE_EMAILS:
-                send_email(reserve_addr, combined_subject, combined_body, all_attachments)
+                send_email(reserve_addr, combined_subject, combined_body)
                 print(f"✅ ТЕСТОВОЕ СВОДНОЕ ПИСЬМО отправлено на {reserve_addr}")
-            print(f"   Содержит {len(prepared)} писем врачам и {len(all_attachments)} форм")
+            print(f"   Содержит {len(prepared)} писем врачам")
             return {
                 "doctors": len(prepared),
                 "rows": sum(len(p["doctor_rows"]) for p in prepared),
@@ -224,7 +198,6 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
     print(f"  SMTP_USER (логин):   {smtp_user}")
     print(f"  SMTP_FROM_EMAIL:     {smtp_from}")
     print(f"  FROM == USER?        {from_matches_user}")
-    print(f"  DISABLE_ATTACHMENTS: {disable_attachments}")
     if not from_matches_user:
         print(f"  ⚠️ ВНИМАНИЕ: FROM != USER — Яндекс может отбрасывать письма!")
     print("=" * 60 + "\n")
@@ -240,15 +213,14 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
             print(f"  FROM:   {smtp_from}")
             print(f"  TO:     {email_addr}")
             print(f"  Тема:   {p['subject']}")
-            print(f"  Вложений: {len(p.get('attachments', []))}")
             print()
 
             if is_reserve:
                 for reserve_addr in RESERVE_EMAILS:
-                    send_email(reserve_addr, p["subject"], p["body"], p["attachments"])
+                    send_email(reserve_addr, p["subject"], p["body"])
                     print(f"✅ Резерв: {doctor['name']} -> {reserve_addr}")
             else:
-                send_email(email_addr, p["subject"], p["body"], p["attachments"])
+                send_email(email_addr, p["subject"], p["body"])
                 print(f"✅ Отправлено: {doctor['name']} -> {email_addr}")
 
             notes = "ПОВТОРНАЯ ОТПРАВКА" if FORCE_RESEND else ""
