@@ -1,7 +1,6 @@
 name: BoTon - Рассылка заданий
 
 on:
-  # Ручной запуск с кнопками (Actions → Run workflow)
   workflow_dispatch:
     inputs:
       force_resend:
@@ -20,9 +19,15 @@ on:
         options:
           - 'true'
           - 'false'
+      disable_attachments:
+        description: 'Отключить вложения (для диагностики)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
 
-  # Автозапуск каждые 15 минут с 07:00 до 23:00 МСК каждый день
-  # 04:00-20:00 UTC = 07:00-23:00 МСК
   schedule:
     - cron: '*/15 4-20 * * *'
 
@@ -49,6 +54,7 @@ jobs:
         env:
           FORCE_RESEND: ${{ github.event.inputs.force_resend || 'false' }}
           TEST_TO_RESERVE: ${{ github.event.inputs.test_to_reserve || 'false' }}
+          DISABLE_ATTACHMENTS: ${{ github.event.inputs.disable_attachments || 'false' }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
