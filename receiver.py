@@ -8,10 +8,9 @@ from log_store import load_log_records, is_message_processed, find_log_by_bot_id
 from google_sheets import batch_update_cells
 from mailer import send_email
 
-CHECK_MARKS = set("xXхХvV✓✔+*")
-
+# Любой непробельный символ внутри скобок считается отметкой
 CHECKBOX_RE = re.compile(
-    r"^[\[(]\s*([^\]\)\s]?)\s*[\])]\s*(\d{1,3})([АБВABabабв])?(?![0-9])"
+    r"^[\[(]\s*([^\s\]\)]?)\s*[\])]\s*(\d{1,3})([АБВABabабв])?(?![0-9])"
 )
 LATIN_TO_CYR = {"A": "А", "B": "В"}
 
@@ -66,38 +65,39 @@ def resolve_keys(digits, letter, mapping):
 
 
 def parse_reply(body, mapping):
-    done, failed = set(), set()
+    """Разбор отметок-квадратиков в ответе врача.
+    
+    Принимает любой непробельный символ внутри скобок как отметку:
+    [x], [X], [✓], [+], [v], [*], [х] (русская), [!], и т.д.
+    Также принимает пробелы внутри скобок: [ x ], [x ], [ x].
+    """
+    done = set()
     seen = False
+    
     for raw_line in body.splitlines():
         line = re.sub(r"^[\s>]+", "", raw_line)
         m = CHECKBOX_RE.match(line)
         if not m:
             continue
+        
         digits = str(int(m.group(2)))
         letter = (m.group(3) or "").upper()
         letter = LATIN_TO_CYR.get(letter, letter)
         keys = resolve_keys(digits, letter, mapping)
         if not keys:
             continue
-        norm = normalize_text(line[m.end():])
-        if "не состоялась" in norm or "не состоялось" in norm:
-            target = failed
-        elif "отработан" in norm:
-            target = done
-        else:
-            continue
-        seen = True
-        if m.group(1) in CHECK_MARKS:
-            target.update(keys)
+        
+        mark = m.group(1)  # Символ внутри скобок
+        if mark:  # Если есть любой символ — задание отмечено как выполненное
+            seen = True
+            done.update(keys)
 
     if not seen:
         return None
 
     result = {}
     for key in mapping:
-        if key in failed:
-            result[key] = STATUS_CONSULT_FAILED
-        elif key in done:
+        if key in done:
             result[key] = STATUS_DONE
         else:
             result[key] = STATUS_NOT_DONE
@@ -111,12 +111,10 @@ def _col_letter(index):
 def aggregate_row_status(statuses):
     """Агрегирует статусы заданий строки в один общий статус для колонки M.
     
-    Приоритет: 'Консультация не состоялась' > 'Задание не отработано' > 'Задание отработано'.
+    Если хотя бы одно задание не отработано — общий статус "не отработано".
     """
     if not statuses:
         return STATUS_NOT_DONE
-    if STATUS_CONSULT_FAILED in statuses:
-        return STATUS_CONSULT_FAILED
     if STATUS_NOT_DONE in statuses:
         return STATUS_NOT_DONE
     return STATUS_DONE
@@ -127,8 +125,7 @@ def send_test_notice(bot_id, updated):
     if updated is None:
         body = (
             "ТЕСТ BoTon: ваше письмо получено, но отметки не найдены.\n\n"
-            "Проверьте, что вы нажали «Ответить», текст письма с квадратиками "
-            "остался, а пустые квадратики [ ] заменены на [x].\n"
+            "Проверьте, что вы нажали «Ответить» и поставили любой знак в квадратиках [ ].\n"
             f"BOTON-ID: {bot_id}\n"
         )
     else:
@@ -212,8 +209,8 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
         candidates = candidates[-IMAP_MAX_TOTAL:]
         print(f"IMAP: найдено потенциальных писем: {len(candidates)}")
 
-        status_updates = {}  # (row, col) -> status для H/J/L
-        row_statuses = {}    # row -> список статусов для агрегации в M
+        status_updates = {}
+        row_statuses = {}
         receive_logs = []
         test_notices = []
 
@@ -305,7 +302,6 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
                         status_col = item["status_col"]
                         if not is_test or TEST_WRITE_TABLE:
                             status_updates[(row, status_col + 1)] = status_value
-                            # Собираем статусы по строке для агрегации в M
                             if row not in row_statuses:
                                 row_statuses[row] = []
                             row_statuses[row].append(status_value)
@@ -340,18 +336,16 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
                 print(f"IMAP: ошибка обработки сообщения: {exc}")
 
         if status_updates or row_statuses:
-            # Обновления для H/J/L
             updates = [
                 {"row": rn, "col": sc, "value": val}
                 for (rn, sc), val in status_updates.items()
             ]
-            # Агрегированные обновления для колонки M
             m_updates = []
             for row, statuses in row_statuses.items():
                 aggregated = aggregate_row_status(statuses)
                 m_updates.append({
                     "row": row,
-                    "col": COL_EXECUTION + 1,  # Колонка M (индекс 12 + 1 = 13 в Google Sheets)
+                    "col": COL_EXECUTION + 1,
                     "value": aggregated,
                 })
 
@@ -396,7 +390,7 @@ if __name__ == "__main__":
         tasks_sheet = tasks_spreadsheet.worksheet(sheet_name)
         print(f"✅ Открыта вкладка: {sheet_name}")
     except gspread.WorksheetNotFound:
-        print(f"️ Вкладка '{sheet_name}' не найдена. Используем fallback: '{TASKS_SHEET_NAME_FALLBACK}'")
+        print(f"⚠️ Вкладка '{sheet_name}' не найдена. Используем fallback: '{TASKS_SHEET_NAME_FALLBACK}'")
         tasks_sheet = tasks_spreadsheet.worksheet(TASKS_SHEET_NAME_FALLBACK)
 
     log_spreadsheet = gc.open_by_key(LOG_SPREADSHEET_ID)
