@@ -100,7 +100,7 @@ def print_stats(stats):
     print(f"Нераспознанная дата: {stats['bad_date']}")
     print(f"Другая дата (не сегодня): {stats['other_date']}")
     print(f"Другой филиал: {stats['other_branch']}")
-    print(f"Уже обработано (столбец M): {stats['already_processed']}")
+    print(f"Уже обработано (столбец N): {stats['already_processed']}")
     print(f"Нет ФИО врача: {stats['no_doctor']}")
     print(f"Нет заданий: {stats['no_tasks']}")
     print(f"ИТОГО ПОДОШЛО ДЛЯ ОТПРАВКИ: {stats['selected']}")
