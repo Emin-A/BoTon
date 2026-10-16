@@ -1,4 +1,4 @@
-"""Тестовый скрипт: отправка на email первого врача из таблицы."""
+"""Тестовый скрипт: отправка на TEST_EMAIL с данными первого врача из таблицы."""
 import os
 import re
 import json
@@ -16,7 +16,7 @@ from mailer import build_email_body, send_email
 import gspread
 from google.oauth2.service_account import Credentials
 
-# Regex для разбора отметок
+# Regex для разбора отметок (тот же, что в receiver.py)
 CHECKBOX_RE = re.compile(
     r"^[\[(]\s*([^\s\]\)]?)\s*[\])]\s*(\d{1,3})([АБВABabабв])?(?![0-9])"
 )
@@ -97,9 +97,9 @@ def simulate_doctor_reply(original_body, bot_id, mark_keys):
 
 
 def test_send_to_first_doctor():
-    """Отправка тестового письма на email первого врача из таблицы."""
+    """Отправка тестового письма на TEST_EMAIL с данными первого врача."""
     print("\n" + "=" * 70)
-    print(" ТЕСТОВАЯ ОТПРАВКА НА EMAIL ПЕРВОГО ВРАЧА")
+    print(" ТЕСТОВАЯ ОТПРАВКА НА TEST_EMAIL (данные первого врача)")
     print("=" * 70)
     
     # 1. Загружаем данные
@@ -136,8 +136,8 @@ def test_send_to_first_doctor():
         print("   💡 Добавьте тестовую строку с сегодняшней датой и пустым столбцом N.")
         return
     
-    # 3. Берём ПЕРВОГО врача из списка
-    print("\n3️⃣ Выбор ПЕРВОГО врача для теста...")
+    # 3. Берём ПЕРВОГО врача из списка строк
+    print("\n3️⃣ Выбор ПЕРВОГО врача из таблицы заданий...")
     grouped = group_by_doctor(rows)
     first_doctor_name = list(grouped.keys())[0]
     doctor_rows = grouped[first_doctor_name]
@@ -147,17 +147,13 @@ def test_send_to_first_doctor():
         print(f"   ❌ Врач '{first_doctor_name}' не найден в базе")
         return
     
-    doctor_email = doctor.get("email", "")
-    if not doctor_email:
-        print(f"    У врача '{doctor['name']}' нет email в таблице 'Врачи'")
-        return
-    
-    print(f"   ✅ Тестовый врач: {doctor['name']}")
-    print(f"   📧 Email: {doctor_email}")
+    print(f"   ✅ Тестовые данные врача: {doctor['name']}")
+    print(f"   📧 Реальный email врача: {doctor.get('email', 'НЕТ')}")
+    print(f"   📧 Письмо уйдёт на TEST_EMAIL: {TEST_EMAIL}")
     print(f"   📋 Строк заданий: {len(doctor_rows)}")
     
     # 4. Генерируем письмо
-    print("\n4️ Генерация тестового письма...")
+    print("\n4️⃣ Генерация тестового письма...")
     patients = build_patients(doctor_rows)
     mapping = build_response_task_map(patients)
     sig = doctor["name"][:3].upper()
@@ -167,21 +163,14 @@ def test_send_to_first_doctor():
     subject = f"[ТЕСТ] Задания для пациентов на {target_date.strftime('%d.%m.%Y')} [BOTON-ID:{bot_id}]"
     
     print(f"   ✅ Письмо сгенерировано")
-    print(f"    Тема: {subject}")
+    print(f"   📝 Тема: {subject}")
     print(f"   📦 Заданий: {len(mapping)}")
     
-    # 5. Отправляем письмо на EMAIL ВРАЧА
-    print(f"\n5️⃣ Отправка письма на {doctor_email}...")
-    print(f"   ⚠️ ВНИМАНИЕ: Это тестовое письмо! Врач получит его на свою почту.")
-    
-    confirm = input("   Продолжить отправку? (y/n): ").strip().lower()
-    if confirm != 'y':
-        print("   ⏭️ Отмена отправки")
-        return
-    
+    # 5. Отправляем письмо на TEST_EMAIL
+    print(f"\n5️⃣ Отправка письма на {TEST_EMAIL}...")
     try:
-        send_email(doctor_email, subject, body)
-        print(f"   ✅ Письмо успешно отправлено на {doctor_email}!")
+        send_email(TEST_EMAIL, subject, body)
+        print(f"   ✅ Письмо успешно отправлено на {TEST_EMAIL}!")
     except Exception as exc:
         print(f"   ❌ Ошибка отправки: {exc}")
         return
@@ -225,7 +214,7 @@ def test_send_to_first_doctor():
                 })
         
         if updates:
-            print(f"    Записываем {len(updates)} ячеек...")
+            print(f"   📝 Записываем {len(updates)} ячеек...")
             batch_update_cells(tasks_sheet, updates, "тестовая запись")
             print(f"   ✅ Записано в таблицу!")
         else:
@@ -235,10 +224,10 @@ def test_send_to_first_doctor():
     print("\n" + "=" * 70)
     print(" ТЕСТИРОВАНИЕ ЗАВЕРШЕНО")
     print("=" * 70)
-    print(f"✅ Письмо отправлено на {doctor_email}")
+    print(f"✅ Письмо отправлено на {TEST_EMAIL}")
     print(f"✅ Ответ симулирован с {len(mark_keys)} отметками")
     print(f"✅ Разбор выполнен: {len(answers)} статусов")
-    print(f"\n Врач {doctor['name']} должен получить тестовое письмо.")
+    print(f"\n📧 Проверьте почту {TEST_EMAIL} — там должно быть тестовое письмо.")
     print(f"📋 Если выбрали 'y' — результаты записаны в таблицу.")
     print("=" * 70 + "\n")
 
