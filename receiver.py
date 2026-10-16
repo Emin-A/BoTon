@@ -8,7 +8,6 @@ from log_store import load_log_records, is_message_processed, find_log_by_bot_id
 from google_sheets import batch_update_cells
 from mailer import send_email
 
-# Любой непробельный символ внутри скобок считается отметкой
 CHECKBOX_RE = re.compile(
     r"^[\[(]\s*([^\s\]\)]?)\s*[\])]\s*(\d{1,3})([АБВABabабв])?(?![0-9])"
 )
@@ -65,12 +64,6 @@ def resolve_keys(digits, letter, mapping):
 
 
 def parse_reply(body, mapping):
-    """Разбор отметок-квадратиков в ответе врача.
-    
-    Принимает любой непробельный символ внутри скобок как отметку:
-    [x], [X], [✓], [+], [v], [*], [х] (русская), [!], и т.д.
-    Также принимает пробелы внутри скобок: [ x ], [x ], [ x].
-    """
     done = set()
     seen = False
     
@@ -87,8 +80,8 @@ def parse_reply(body, mapping):
         if not keys:
             continue
         
-        mark = m.group(1)  # Символ внутри скобок
-        if mark:  # Если есть любой символ — задание отмечено как выполненное
+        mark = m.group(1)
+        if mark:
             seen = True
             done.update(keys)
 
@@ -109,10 +102,6 @@ def _col_letter(index):
 
 
 def aggregate_row_status(statuses):
-    """Агрегирует статусы заданий строки в один общий статус для колонки M.
-    
-    Если хотя бы одно задание не отработано — общий статус "не отработано".
-    """
     if not statuses:
         return STATUS_NOT_DONE
     if STATUS_NOT_DONE in statuses:
@@ -163,6 +152,14 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
     user = os.environ.get("IMAP_USER", "")
     password = os.environ.get("IMAP_PASSWORD", "")
 
+    print(f"\n{'=' * 60}")
+    print(f" ДИАГНОСТИКА IMAP-ПОДКЛЮЧЕНИЯ")
+    print(f"{'=' * 60}")
+    print(f"  IMAP_HOST:  {host}")
+    print(f"  IMAP_PORT:  {port}")
+    print(f"  IMAP_USER:  {user}")
+    print(f"{'=' * 60}\n")
+
     test_email = normalize_email(TEST_EMAIL)
     report_email = normalize_email(REPORT_EMAIL)
     reserve_emails = [normalize_email(a) for a in RESERVE_EMAILS if a]
@@ -177,16 +174,48 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
         print(f"IMAP: подключение к {host}:{port}...")
         mail = imaplib.IMAP4_SSL(host, port, timeout=IMAP_TIMEOUT)
         mail.login(user, password)
+        
+        # Проверяем доступные папки
+        status, folders = mail.list()
+        print(f"\n📁 Доступные папки:")
+        for folder in folders[:10]:  # Первые 10 папок
+            print(f"   {folder.decode('utf-8', errors='replace')}")
+        print()
+        
         status, _ = mail.select("INBOX", readonly=True)
         if status != "OK":
             print("IMAP: не удалось открыть INBOX")
             return 0
 
+        # Считаем общее количество писем в INBOX
+        status, data = mail.search(None, "ALL")
+        if status == "OK" and data[0]:
+            all_emails = data[0].split()
+            print(f"📊 Всего писем в INBOX: {len(all_emails)}")
+            
+            # Показываем последние 5 писем для диагностики
+            if len(all_emails) > 0:
+                print(f"\n Последние 5 писем в INBOX:")
+                for num in all_emails[-5:]:
+                    st, msg_data = mail.fetch(num, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])")
+                    if st == "OK" and msg_data[0]:
+                        header_data = msg_data[0][1].decode('utf-8', errors='replace')
+                        print(f"   Письмо #{num.decode()}:")
+                        for line in header_data.split('\n'):
+                            if line.strip():
+                                print(f"      {line.strip()}")
+                        print()
+        else:
+            print(f"📊 INBOX пуст")
+
         records = load_log_records(log_sheet)
         since_date = (now_moscow().date() - timedelta(days=IMAP_LOOKBACK_DAYS))
         since_imap = since_date.strftime("%d-%b-%Y")
         print(f"IMAP: ищем письма с {since_date.strftime('%d.%m.%Y')}")
-        print(f"IMAP: адреса поиска: {search_addrs}")
+        print(f"IMAP: адреса поиска ({len(search_addrs)}):")
+        for addr in search_addrs:
+            print(f"   - {addr}")
+        print()
 
         candidates = []
         seen = set()
@@ -196,8 +225,11 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
             try:
                 st, data = mail.search(None, "FROM", addr, "SINCE", since_imap)
                 if st != "OK" or not data or not data[0]:
+                    print(f"   {addr}: писем не найдено")
                     continue
-                nums = data[0].split()[-IMAP_MAX_PER_DOCTOR:]
+                nums = data[0].split()
+                print(f"   {addr}: найдено {len(nums)} писем")
+                nums = nums[-IMAP_MAX_PER_DOCTOR:]
                 for n in nums:
                     key = n.decode(errors="ignore")
                     if key not in seen:
@@ -207,7 +239,7 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
                 print(f"IMAP: ошибка поиска {addr}: {exc}")
 
         candidates = candidates[-IMAP_MAX_TOTAL:]
-        print(f"IMAP: найдено потенциальных писем: {len(candidates)}")
+        print(f"\nIMAP: всего потенциальных писем: {len(candidates)}")
 
         status_updates = {}
         row_statuses = {}
@@ -236,15 +268,24 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
                 subject = decode_mime_header(msg.get("Subject", ""))
                 body = extract_message_body(msg)
 
+                print(f"\n Обработка письма:")
+                print(f"   From: {from_header}")
+                print(f"   Subject: {subject}")
+                print(f"   Message-ID: {message_id}")
+
                 m = re.search(r"<([^>]+)>", from_header)
                 sender_email = normalize_email(m.group(1) if m else from_header)
 
                 if sender_email != expected_email:
+                    print(f"   ️ Отправитель {sender_email} не совпадает с ожидаемым {expected_email}")
                     continue
 
                 bot_id = extract_bot_id(subject, body)
                 if not bot_id:
+                    print(f"   ⚠️ BOTON-ID не найден в теме или теле письма")
                     continue
+
+                print(f"   BOTON-ID: {bot_id}")
 
                 is_test = bot_id.upper().startswith("BOTON-TEST")
                 doctor = next(
@@ -254,6 +295,7 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
 
                 log_record = find_log_by_bot_id(records, bot_id)
                 if not log_record:
+                    print(f"   ⚠️ Запись с BOTON-ID {bot_id} не найдена в журнале")
                     continue
 
                 if is_test:
@@ -280,6 +322,7 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
 
                 answers = parse_reply(body, mapping)
                 if not answers:
+                    print(f"   ⚠️ Отметки не найдены в теле письма")
                     if is_test:
                         test_notices.append((bot_id, None))
                     receive_logs.append({
@@ -294,6 +337,8 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
                         "notes": "отметки не найдены",
                     })
                     continue
+
+                print(f"   ✅ Найдено отметок: {len(answers)}")
 
                 updated = []
                 for key, status_value in answers.items():
@@ -327,10 +372,10 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
 
                 if is_test:
                     test_notices.append((bot_id, updated))
-                    print(f"Тестовый ответ обработан [{bot_id}]")
+                    print(f"   Тестовый ответ обработан [{bot_id}]")
                 else:
                     processed += 1
-                    print(f"Ответ обработан: {doctor['name']} [{bot_id}]")
+                    print(f"   Ответ обработан: {doctor['name']} [{bot_id}]")
 
             except Exception as exc:
                 print(f"IMAP: ошибка обработки сообщения: {exc}")
@@ -350,7 +395,7 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
                 })
 
             all_updates = updates + m_updates
-            print(f"Лист: пакетная запись H/J/L + M ({len(all_updates)} ячеек: {len(updates)} в H/J/L, {len(m_updates)} в M)")
+            print(f"\nЛист: пакетная запись H/J/L + M ({len(all_updates)} ячеек: {len(updates)} в H/J/L, {len(m_updates)} в M)")
             batch_update_cells(tasks_sheet, all_updates, "запись H/J/L + M")
 
         if receive_logs:
