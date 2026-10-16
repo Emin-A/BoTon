@@ -3,6 +3,7 @@ import os, ssl, smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
+
 def main():
     host = os.environ.get("SMTP_HOST", "")
     port = int(os.environ.get("SMTP_PORT", "465"))
@@ -11,11 +12,11 @@ def main():
     from_email = os.environ.get("SMTP_FROM_EMAIL", user)
     to_email = os.environ.get("TEST_EMAIL", "")
 
-    print(f"SMTP_HOST:    {host}")
-    print(f"SMTP_PORT:    {port}")
-    print(f"SMTP_USER:    {user}")
-    print(f"SMTP_FROM:    {from_email}")
-    print(f"TEST_EMAIL:   {to_email}")
+    print(f"SMTP_HOST:       {host}")
+    print(f"SMTP_PORT:       {port}")
+    print(f"SMTP_USER:       {user}")
+    print(f"SMTP_FROM_EMAIL: {from_email}")
+    print(f"TEST_EMAIL:      {to_email}")
 
     if not all([host, user, password, to_email]):
         print("❌ Не все параметры заданы!")
@@ -35,6 +36,7 @@ def main():
         print("✅ Письмо отправлено успешно!")
     except Exception as exc:
         print(f"❌ Ошибка: {exc}")
+
 
 if __name__ == "__main__":
     main()
