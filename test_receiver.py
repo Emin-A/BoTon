@@ -112,7 +112,7 @@ def parse_reply(body, mapping):
 
 def wait_for_reply(bot_id, timeout_minutes=10):
     """Ждёт ответное письмо с указанным BOTON-ID в IMAP-ящике."""
-    print(f"\n⏳ Ожидание ответа на BOTON-ID: {bot_id}")
+    print(f"\n Ожидание ответа на BOTON-ID: {bot_id}")
     print(f"   Таймаут: {timeout_minutes} минут")
     
     host = os.environ.get("IMAP_HOST", "")
@@ -138,17 +138,15 @@ def wait_for_reply(bot_id, timeout_minutes=10):
         while True:
             elapsed = time.time() - start_time
             if elapsed > timeout_seconds:
-                print(f"\n    Таймаут! Ответ не получен за {timeout_minutes} минут.")
+                print(f"\n   ⏰ Таймаут! Ответ не получен за {timeout_minutes} минут.")
                 return None
             
-            # Ищем письма с BOTON-ID в теме
             search_query = f'(SUBJECT "{bot_id}")'
             status, data = mail.search(None, search_query)
             
             if status == "OK" and data[0]:
                 nums = data[0].split()
                 if nums:
-                    # Берём последнее письмо (самое свежее)
                     num = nums[-1]
                     st, msg_data = mail.fetch(num, "(BODY.PEEK[])")
                     if st == "OK" and msg_data[0]:
@@ -163,7 +161,7 @@ def wait_for_reply(bot_id, timeout_minutes=10):
             
             remaining = int(timeout_seconds - elapsed)
             print(f"   ⏳ Прошло {int(elapsed)} сек. Осталось {remaining} сек...", end="\r")
-            time.sleep(5)  # Проверяем каждые 5 секунд
+            time.sleep(5)
     
     except Exception as exc:
         print(f"\n   ❌ Ошибка IMAP: {exc}")
@@ -183,7 +181,6 @@ def test_full_cycle_with_reply():
     print(" ТЕСТОВЫЙ ЦИКЛ: ОТПРАВКА → ОТВЕТ → РАЗБОР → ЗАПИСЬ")
     print("=" * 70)
     
-    # 1. Загружаем данные
     print("\n1️⃣ Загрузка данных...")
     creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
     gc = gspread.authorize(creds)
@@ -205,19 +202,16 @@ def test_full_cycle_with_reply():
     
     doctors_sheet = gc.open_by_key(DOCTORS_SPREADSHEET_ID).worksheet(DOCTORS_SHEET_NAME)
     doctors = load_doctors(doctors_sheet)
-    print(f"   👨⚕️ Загружено врачей: {len(doctors)}")
+    print(f"   👨‍⚕️ Загружено врачей: {len(doctors)}")
     
-    # 2. Загружаем строки
     print(f"\n2️⃣ Загрузка строк за {target_date.strftime('%d.%m.%Y')}...")
     rows, stats = load_task_rows(tasks_sheet, target_date)
     print_stats(stats)
     
     if not rows:
         print("\n   ❌ НЕТ СТРОК ДЛЯ ТЕСТИРОВАНИЯ!")
-        print("   💡 Добавьте тестовую строку с сегодняшней датой и пустым столбцом N.")
         return
     
-    # 3. Берём первого врача
     print("\n3️⃣ Выбор первого врача...")
     grouped = group_by_doctor(rows)
     first_doctor_name = list(grouped.keys())[0]
@@ -229,9 +223,8 @@ def test_full_cycle_with_reply():
         return
     
     print(f"   ✅ Тестовый врач: {doctor['name']}")
-    print(f"   📋 Строк заданий: {len(doctor_rows)}")
+    print(f"    Строк заданий: {len(doctor_rows)}")
     
-    # 4. Генерируем письмо
     print("\n4️⃣ Генерация тестового письма...")
     patients = build_patients(doctor_rows)
     mapping = build_response_task_map(patients)
@@ -245,14 +238,13 @@ def test_full_cycle_with_reply():
     print(f"   📝 Тема: {subject}")
     print(f"   📦 Заданий: {len(mapping)}")
     
-    # 5. Отправляем письмо на IMAP_USER (тот ящик, который проверяется)
     imap_user = os.environ.get("IMAP_USER", "")
     if not imap_user:
-        print("   ❌ IMAP_USER не настроен!")
+        print("    IMAP_USER не настроен!")
         return
     
     print(f"\n5️⃣ Отправка письма на {imap_user}...")
-    print(f"   ️ Отвечайте на это письмо через IMAP-ящик ({imap_user})!")
+    print(f"   ⚠️ Отвечайте на это письмо через IMAP-ящик ({imap_user})!")
     
     try:
         send_email(imap_user, subject, body)
@@ -261,10 +253,9 @@ def test_full_cycle_with_reply():
         print(f"   ❌ Ошибка отправки: {exc}")
         return
     
-    # 6. Ждём ответ
     print("\n6️⃣ Ожидание вашего ответа...")
     print(f"   📧 Откройте почту {imap_user}")
-    print(f"    Найдите письмо с темой: [ТЕСТ] Задания для пациентов...")
+    print(f"   📝 Найдите письмо с темой: [ТЕСТ] Задания для пациентов...")
     print(f"   ✏️ Нажмите 'Ответить' и поставьте [x] в нужных заданиях")
     print(f"   📤 Отправьте ответ")
     
@@ -274,7 +265,6 @@ def test_full_cycle_with_reply():
         print("\n   ❌ Ответ не получен!")
         return
     
-    # 7. Разбираем ответ
     print("\n7️⃣ Разбор ответа...")
     answers = parse_reply(reply_body, mapping)
     
@@ -289,11 +279,10 @@ def test_full_cycle_with_reply():
         mark = "✅" if status == STATUS_DONE else "❌"
         print(f"      {mark} {key}: {status}")
     
-    # 8. Записываем в таблицу
     print("\n8️⃣ Запись в таблицу...")
     write_to_table = input("   Записать результаты в таблицу? (y/n, по умолчанию y): ").strip().lower()
     if write_to_table == 'n':
-        print("   ⏭️ Пропущено")
+        print("   ️ Пропущено")
     else:
         updates = []
         for key, status_value in answers.items():
@@ -311,9 +300,8 @@ def test_full_cycle_with_reply():
             batch_update_cells(tasks_sheet, updates, "тестовая запись")
             print(f"   ✅ Записано в таблицу!")
         else:
-            print(f"   ️ Нет ячеек для записи")
+            print(f"   ⚠️ Нет ячеек для записи")
     
-    # 9. Итог
     print("\n" + "=" * 70)
     print(" ТЕСТИРОВАНИЕ ЗАВЕРШЕНО")
     print("=" * 70)
