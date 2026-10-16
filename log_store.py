@@ -4,6 +4,8 @@ import gspread
 from config import *
 from google_sheets import sheets_call
 from utils import now_moscow
+
+
 def ensure_log_sheet(book):
     try:
         ws = book.worksheet(LOG_SHEET_NAME)
@@ -21,6 +23,7 @@ def ensure_log_sheet(book):
         )
         return ws
 
+
 def make_log_row(event, bot_id="", target_date="", doctor="", email_address="",
                  mapping=None, message_id="", result="", notes=""):
     return [
@@ -29,6 +32,7 @@ def make_log_row(event, bot_id="", target_date="", doctor="", email_address="",
         json.dumps(mapping or {}, ensure_ascii=False),
         message_id, result, notes,
     ]
+
 
 def append_log_entries(log_sheet, entries):
     if not entries:
@@ -54,6 +58,7 @@ def append_log_entries(log_sheet, entries):
         "пакетная запись BoTon_Log",
     )
 
+
 def load_log_records(log_sheet):
     values = log_sheet.get_all_values()
     records = []
@@ -68,17 +73,20 @@ def load_log_records(log_sheet):
         })
     return records
 
+
 def get_send_state(records, bot_id):
     for r in reversed(records):
         if r["event"] == "SEND" and r["bot_id"] == bot_id and r["result"] in ("SENT", "PENDING"):
             return r["result"]
     return ""
 
+
 def find_log_by_bot_id(records, bot_id):
     for r in reversed(records):
         if r["event"] == "SEND" and r["bot_id"] == bot_id and r["result"] == "SENT":
             return r
     return None
+
 
 def is_message_processed(records, message_id):
     if not message_id:
