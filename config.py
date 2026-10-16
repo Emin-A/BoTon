@@ -20,7 +20,6 @@ REPORT_EMAIL = "eagaverdiev@mosmedzdrav.ru"
 
 # Список резервных адресов: сюда уходят письма в тестовом режиме
 # и когда у врача не заполнен email.
-# Добавьте сюда все ящики заведующего.
 RESERVE_EMAILS = [
     "eagaverdiev@mosmedzdrav.ru",
     "agaverdiev@mail.ru",
@@ -42,6 +41,7 @@ DOCTORS_SHEET_NAME = "Врачи"
 LOG_SPREADSHEET_ID = "1grwcVilkiwOI01UgWu4jrhOLV2GVM7TJ6TqlXE7enAU"
 LOG_SHEET_NAME = "BoTon_Log"
 
+# Номера столбцов: индексация с нуля
 COL_DATE = 0
 COL_BRANCH = 1
 COL_DOCTOR = 2
@@ -54,7 +54,8 @@ COL_TASK2 = 8
 COL_STATUS2 = 9
 COL_TASK3 = 10
 COL_STATUS3 = 11
-COL_COMPLETION = 12
+COL_EXECUTION = 12   # Колонка M — статус выполнения задания (пишет receiver)
+COL_COMPLETION = 13  # Колонка N — отметка об отправке (пишет sender)
 
 STATUS_PRIORITY = {
     "": 0,
