@@ -1,4 +1,4 @@
-"""Получение ответов врачей через IMAP и обновление H/J/L."""
+"""Получение ответов врачей через IMAP и обновление H/J/L + M."""
 import os, re, json, imaplib, email
 from email.header import decode_header
 from datetime import timedelta
@@ -108,6 +108,20 @@ def _col_letter(index):
     return chr(ord("A") + index) if 0 <= index < 26 else str(index + 1)
 
 
+def aggregate_row_status(statuses):
+    """Агрегирует статусы заданий строки в один общий статус для колонки M.
+    
+    Приоритет: 'Консультация не состоялась' > 'Задание не отработано' > 'Задание отработано'.
+    """
+    if not statuses:
+        return STATUS_NOT_DONE
+    if STATUS_CONSULT_FAILED in statuses:
+        return STATUS_CONSULT_FAILED
+    if STATUS_NOT_DONE in statuses:
+        return STATUS_NOT_DONE
+    return STATUS_DONE
+
+
 def send_test_notice(bot_id, updated):
     subject = f"[ТЕСТ BoTon] Результат разбора вашего ответа [{bot_id}]"
     if updated is None:
@@ -131,7 +145,7 @@ def send_test_notice(bot_id, updated):
         lines.append("")
         lines.append("Что не отмечено, записано как «Задание не отработано».")
         if TEST_WRITE_TABLE:
-            lines.append("Статусы ЗАПИСАНЫ в таблицу (столбцы H/J/L): "
+            lines.append("Статусы ЗАПИСАНЫ в таблицу (столбцы H/J/L и M): "
                          "после проверки очистите эти ячейки вручную.")
         else:
             lines.append("В таблицу в тестовом режиме ничего не записано.")
@@ -154,11 +168,9 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
 
     test_email = normalize_email(TEST_EMAIL)
     report_email = normalize_email(REPORT_EMAIL)
-    # Нормализуем все резервные адреса
     reserve_emails = [normalize_email(a) for a in RESERVE_EMAILS if a]
     doctor_emails = [normalize_email(d["email"]) for d in doctors if d["email"]]
 
-    # Ищем письма от: врачей + TEST_EMAIL + ВСЕХ резервных адресов
     extra = [a for a in [test_email, report_email] + reserve_emails if a]
     search_addrs = list(dict.fromkeys(doctor_emails + extra))
 
@@ -200,7 +212,8 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
         candidates = candidates[-IMAP_MAX_TOTAL:]
         print(f"IMAP: найдено потенциальных писем: {len(candidates)}")
 
-        status_updates = {}
+        status_updates = {}  # (row, col) -> status для H/J/L
+        row_statuses = {}    # row -> список статусов для агрегации в M
         receive_logs = []
         test_notices = []
 
@@ -247,18 +260,14 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
                     continue
 
                 if is_test:
-                    # Тестовые ответы принимаются только с адреса TEST_EMAIL.
                     if sender_email != test_email:
                         continue
                     if not doctor:
                         doctor = {"name": "ТЕСТ", "email": sender_email}
                 else:
-                    # Принимаем ответ, если отправитель совпадает с адресом,
-                    # на который ушло письмо по журналу (в т.ч. резервному).
                     log_email = normalize_email(
                         log_record.get("email_address") or log_record.get("email") or ""
                     )
-                    # Также принимаем, если отправитель — любой из резервных адресов
                     if not doctor and sender_email != log_email and sender_email not in reserve_emails:
                         continue
                     if not doctor:
@@ -292,12 +301,18 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
                 updated = []
                 for key, status_value in answers.items():
                     for item in mapping.get(key, []):
+                        row = item["row_number"]
+                        status_col = item["status_col"]
                         if not is_test or TEST_WRITE_TABLE:
-                            status_updates[(item["row_number"], item["status_col"] + 1)] = status_value
+                            status_updates[(row, status_col + 1)] = status_value
+                            # Собираем статусы по строке для агрегации в M
+                            if row not in row_statuses:
+                                row_statuses[row] = []
+                            row_statuses[row].append(status_value)
                         updated.append({
                             "key": key,
-                            "row": item["row_number"],
-                            "column": _col_letter(item["status_col"]),
+                            "row": row,
+                            "column": _col_letter(status_col),
                             "title": item["title"],
                             "status": status_value,
                         })
@@ -324,13 +339,25 @@ def process_incoming_messages(tasks_sheet, log_sheet, doctors):
             except Exception as exc:
                 print(f"IMAP: ошибка обработки сообщения: {exc}")
 
-        if status_updates:
+        if status_updates or row_statuses:
+            # Обновления для H/J/L
             updates = [
                 {"row": rn, "col": sc, "value": val}
                 for (rn, sc), val in status_updates.items()
             ]
-            print(f"Лист: пакетная запись H/J/L ({len(updates)} ячеек)")
-            batch_update_cells(tasks_sheet, updates, "запись H/J/L")
+            # Агрегированные обновления для колонки M
+            m_updates = []
+            for row, statuses in row_statuses.items():
+                aggregated = aggregate_row_status(statuses)
+                m_updates.append({
+                    "row": row,
+                    "col": COL_EXECUTION + 1,  # Колонка M (индекс 12 + 1 = 13 в Google Sheets)
+                    "value": aggregated,
+                })
+
+            all_updates = updates + m_updates
+            print(f"Лист: пакетная запись H/J/L + M ({len(all_updates)} ячеек: {len(updates)} в H/J/L, {len(m_updates)} в M)")
+            batch_update_cells(tasks_sheet, all_updates, "запись H/J/L + M")
 
         if receive_logs:
             print(f"BoTon_Log: пакетная запись RECEIVE ({len(receive_logs)})")
@@ -369,7 +396,7 @@ if __name__ == "__main__":
         tasks_sheet = tasks_spreadsheet.worksheet(sheet_name)
         print(f"✅ Открыта вкладка: {sheet_name}")
     except gspread.WorksheetNotFound:
-        print(f"⚠️ Вкладка '{sheet_name}' не найдена. Используем fallback: '{TASKS_SHEET_NAME_FALLBACK}'")
+        print(f"️ Вкладка '{sheet_name}' не найдена. Используем fallback: '{TASKS_SHEET_NAME_FALLBACK}'")
         tasks_sheet = tasks_spreadsheet.worksheet(TASKS_SHEET_NAME_FALLBACK)
 
     log_spreadsheet = gc.open_by_key(LOG_SPREADSHEET_ID)
