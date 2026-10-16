@@ -29,7 +29,7 @@ def load_doctors(doctors_sheet):
     """Читает таблицу врачей, определяя столбцы по заголовкам."""
     values = sheets_call(lambda: doctors_sheet.get_all_values(), "чтение базы врачей")
     if not values or len(values) < 2:
-        print("⚠️  Таблица врачей пуста или не имеет заголовков")
+        print("⚠️ Таблица врачей пуста или не имеет заголовков")
         return []
 
     header = [normalize_text(h) for h in values[0]]
@@ -62,7 +62,6 @@ def load_doctors(doctors_sheet):
             "email": email,
             "branch": str(row[branch_col]).strip() if branch_col is not None and len(row) > branch_col else "",
         })
-
     print(f"Загружено врачей из таблицы: {len(doctors)}")
     return doctors
 
@@ -71,7 +70,6 @@ def find_doctor_robust(source_name, doctors):
     """Ищет врача по ФИО с нечётким сравнением."""
     if not source_name or not doctors:
         return None
-
     source_norm = normalize_text(source_name)
 
     # Точное совпадение после нормализации
@@ -91,5 +89,4 @@ def find_doctor_robust(source_name, doctors):
             doc_initials = set(p[0] for p in doc_parts[1:] if p)
             if source_initials & doc_initials:
                 return doc
-
     return None
