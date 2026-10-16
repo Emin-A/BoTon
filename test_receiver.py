@@ -1,25 +1,22 @@
-"""Тестовый скрипт для проверки полного цикла: отправка → ответ → разбор → запись."""
+"""Тестовый скрипт: отправка на email первого врача из таблицы."""
 import os
-import ssl
-import smtplib
-import json
 import re
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 # Импорты из проекта
 from config import *
 from utils import normalize_text, normalize_email, now_moscow
-from tasks import build_patients, make_bot_id, group_by_doctor, build_response_task_map
-from doctors import find_doctor_robust
-from log_store import load_log_records, append_log_entries
+from tasks import load_task_rows, print_stats, build_patients, build_response_task_map, group_by_doctor
+from doctors import find_doctor_robust, load_doctors
+from log_store import append_log_entries
 from google_sheets import batch_update_cells
 from mailer import build_email_body, send_email
+import gspread
+from google.oauth2.service_account import Credentials
 
-
-# Regex для разбора отметок (тот же, что в receiver.py)
+# Regex для разбора отметок
 CHECKBOX_RE = re.compile(
     r"^[\[(]\s*([^\s\]\)]?)\s*[\])]\s*(\d{1,3})([АБВABabабв])?(?![0-9])"
 )
@@ -72,21 +69,19 @@ def parse_reply(body, mapping):
 def simulate_doctor_reply(original_body, bot_id, mark_keys):
     """Симулирует ответ врача с отметками указанных заданий."""
     lines = []
-    lines.append(f"> {original_body.splitlines()[0]}")  # Цитата первой строки
-    lines.append(f">")
+    lines.append(f"> {original_body.splitlines()[0]}")
+    lines.append(">")
     lines.append(f"> Re: Задания для пациентов на {now_moscow().strftime('%d.%m.%Y')} [BOTON-ID:{bot_id}]")
-    lines.append(f">")
+    lines.append(">")
     lines.append("")
     
-    # Разбираем оригинальное письмо и добавляем отметки
     for line in original_body.splitlines():
         if line.startswith("      [ ]"):
-            # Извлекаем ключ задания
             m = re.search(r"\[ \]\s*(\d+[АБВ]?)", line)
             if m:
                 key = m.group(1)
                 if key in mark_keys:
-                    line = line.replace("[ ]", "[x]")  # Отмечаем задание
+                    line = line.replace("[ ]", "[x]")
             lines.append(line)
         elif line.startswith("   [ ]"):
             m = re.search(r"\[ \]\s*(\d+)", line)
@@ -101,18 +96,14 @@ def simulate_doctor_reply(original_body, bot_id, mark_keys):
     return "\n".join(lines)
 
 
-def test_full_cycle():
-    """Полный тестовый цикл: отправка → ответ → разбор."""
+def test_send_to_first_doctor():
+    """Отправка тестового письма на email первого врача из таблицы."""
     print("\n" + "=" * 70)
-    print(" ТЕСТИРОВАНИЕ ПОЛНОГО ЦИКЛА BoTon")
+    print(" ТЕСТОВАЯ ОТПРАВКА НА EMAIL ПЕРВОГО ВРАЧА")
     print("=" * 70)
     
     # 1. Загружаем данные
     print("\n1️⃣ Загрузка данных...")
-    import gspread
-    from google.oauth2.service_account import Credentials
-    from doctors import load_doctors
-    
     creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
     gc = gspread.authorize(creds)
     
@@ -125,21 +116,28 @@ def test_full_cycle():
         print(f"   ✅ Открыта вкладка: {sheet_name}")
     except gspread.WorksheetNotFound:
         print(f"   ⚠️ Вкладка '{sheet_name}' не найдена. Используем fallback.")
-        tasks_sheet = tasks_spreadsheet.worksheet(TASKS_SHEET_NAME_FALLBACK)
+        try:
+            tasks_sheet = tasks_spreadsheet.worksheet(TASKS_SHEET_NAME_FALLBACK)
+        except gspread.WorksheetNotFound:
+            print("   ❌ Fallback-вкладка тоже не найдена!")
+            return
     
     doctors_sheet = gc.open_by_key(DOCTORS_SPREADSHEET_ID).worksheet(DOCTORS_SHEET_NAME)
     doctors = load_doctors(doctors_sheet)
     print(f"   👨‍⚕️ Загружено врачей: {len(doctors)}")
     
-    # 2. Берём первого врача с заданиями
-    print("\n2️⃣ Поиск врача с заданиями...")
-    from tasks import load_task_rows
+    # 2. Загружаем строки
+    print(f"\n2️⃣ Загрузка строк за {target_date.strftime('%d.%m.%Y')}...")
     rows, stats = load_task_rows(tasks_sheet, target_date)
+    print_stats(stats)
     
     if not rows:
-        print("   ❌ Нет строк для тестирования")
+        print("\n   ❌ НЕТ СТРОК ДЛЯ ТЕСТИРОВАНИЯ!")
+        print("   💡 Добавьте тестовую строку с сегодняшней датой и пустым столбцом N.")
         return
     
+    # 3. Берём ПЕРВОГО врача из списка
+    print("\n3️⃣ Выбор ПЕРВОГО врача для теста...")
     grouped = group_by_doctor(rows)
     first_doctor_name = list(grouped.keys())[0]
     doctor_rows = grouped[first_doctor_name]
@@ -149,48 +147,58 @@ def test_full_cycle():
         print(f"   ❌ Врач '{first_doctor_name}' не найден в базе")
         return
     
+    doctor_email = doctor.get("email", "")
+    if not doctor_email:
+        print(f"    У врача '{doctor['name']}' нет email в таблице 'Врачи'")
+        return
+    
     print(f"   ✅ Тестовый врач: {doctor['name']}")
-    print(f"   📧 Email: {doctor['email']}")
+    print(f"   📧 Email: {doctor_email}")
     print(f"   📋 Строк заданий: {len(doctor_rows)}")
     
-    # 3. Генерируем письмо
-    print("\n3️⃣ Генерация тестового письма...")
+    # 4. Генерируем письмо
+    print("\n4️ Генерация тестового письма...")
     patients = build_patients(doctor_rows)
     mapping = build_response_task_map(patients)
     sig = doctor["name"][:3].upper()
     bot_id = f"BOTON-TEST-{target_date.strftime('%Y%m%d')}-{sig}-{datetime.now().strftime('%H%M%S')}"
     
     body = build_email_body(doctor, patients, bot_id)
-    subject = f"Задания для пациентов на {target_date.strftime('%d.%m.%Y')} [BOTON-ID:{bot_id}]"
+    subject = f"[ТЕСТ] Задания для пациентов на {target_date.strftime('%d.%m.%Y')} [BOTON-ID:{bot_id}]"
     
     print(f"   ✅ Письмо сгенерировано")
-    print(f"   📝 Тема: {subject}")
-    print(f"    Заданий: {len(mapping)}")
+    print(f"    Тема: {subject}")
+    print(f"   📦 Заданий: {len(mapping)}")
     
-    # 4. Отправляем письмо на TEST_EMAIL
-    print(f"\n4️⃣ Отправка письма на {TEST_EMAIL}...")
+    # 5. Отправляем письмо на EMAIL ВРАЧА
+    print(f"\n5️⃣ Отправка письма на {doctor_email}...")
+    print(f"   ⚠️ ВНИМАНИЕ: Это тестовое письмо! Врач получит его на свою почту.")
+    
+    confirm = input("   Продолжить отправку? (y/n): ").strip().lower()
+    if confirm != 'y':
+        print("   ⏭️ Отмена отправки")
+        return
+    
     try:
-        send_email(TEST_EMAIL, subject, body)
-        print(f"   ✅ Письмо отправлено")
+        send_email(doctor_email, subject, body)
+        print(f"   ✅ Письмо успешно отправлено на {doctor_email}!")
     except Exception as exc:
         print(f"   ❌ Ошибка отправки: {exc}")
         return
     
-    # 5. Симулируем ответ врача
-    print("\n5️⃣ Симуляция ответа врача...")
-    
-    # Выбираем несколько заданий для отметки (первые 3)
-    mark_keys = list(mapping.keys())[:3]
-    print(f"   Отмечаем задания: {mark_keys}")
+    # 6. Симулируем ответ врача
+    print("\n6️⃣ Симуляция ответа врача...")
+    mark_keys = list(mapping.keys())[:3]  # Отмечаем первые 3 задания
+    print(f"   📝 Отмечаем задания: {mark_keys}")
     
     reply_body = simulate_doctor_reply(body, bot_id, mark_keys)
     
-    # 6. Разбираем ответ
-    print("\n6️⃣ Разбор ответа...")
+    # 7. Разбираем ответ
+    print("\n7️⃣ Разбор ответа...")
     answers = parse_reply(reply_body, mapping)
     
     if not answers:
-        print("   ❌ Отметки не найдены")
+        print("   ❌ Отметки не найдены в сгенерированном ответе!")
         return
     
     print(f"   ✅ Найдено отметок: {len(answers)}")
@@ -199,11 +207,12 @@ def test_full_cycle():
         mark = "✅" if status == STATUS_DONE else "❌"
         print(f"      {mark} {key}: {status}")
     
-    # 7. Записываем в таблицу (опционально)
-    print("\n7️ Запись в таблицу...")
-    write_to_table = input("   Записать результаты в таблицу? (y/n): ").strip().lower() == 'y'
-    
-    if write_to_table:
+    # 8. Записываем в таблицу
+    print("\n8️⃣ Запись в таблицу...")
+    write_to_table = input("   Записать результаты в таблицу? (y/n, по умолчанию y): ").strip().lower()
+    if write_to_table == 'n':
+        print("   ⏭️ Пропущено")
+    else:
         updates = []
         for key, status_value in answers.items():
             for item in mapping.get(key, []):
@@ -216,27 +225,23 @@ def test_full_cycle():
                 })
         
         if updates:
-            print(f"   Записываем {len(updates)} ячеек...")
+            print(f"    Записываем {len(updates)} ячеек...")
             batch_update_cells(tasks_sheet, updates, "тестовая запись")
-            print(f"   ✅ Записано в таблицу")
+            print(f"   ✅ Записано в таблицу!")
         else:
             print(f"   ⚠️ Нет ячеек для записи")
-    else:
-        print(f"   ⏭️ Пропущено")
     
-    # 8. Итог
+    # 9. Итог
     print("\n" + "=" * 70)
     print(" ТЕСТИРОВАНИЕ ЗАВЕРШЕНО")
     print("=" * 70)
-    print(f"✅ Письмо отправлено на {TEST_EMAIL}")
+    print(f"✅ Письмо отправлено на {doctor_email}")
     print(f"✅ Ответ симулирован с {len(mark_keys)} отметками")
     print(f"✅ Разбор выполнен: {len(answers)} статусов")
-    if write_to_table:
-        print(f"✅ Результаты записаны в таблицу")
-    print(f"\n📧 Проверьте почту {TEST_EMAIL} — там должно быть тестовое письмо.")
-    print(f"📋 Проверьте таблицу — там должны появиться статусы (если выбрали 'y').")
+    print(f"\n Врач {doctor['name']} должен получить тестовое письмо.")
+    print(f"📋 Если выбрали 'y' — результаты записаны в таблицу.")
     print("=" * 70 + "\n")
 
 
 if __name__ == "__main__":
-    test_full_cycle()
+    test_send_to_first_doctor()
