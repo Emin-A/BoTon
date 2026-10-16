@@ -193,7 +193,7 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
 
     sent_logs = []
     error_logs = []
-    m_updates = []
+    n_updates = []  # Отметки об отправке в колонку N
     successful_doctors = 0
     total_tasks = 0
     reserve_sent = 0
@@ -238,11 +238,12 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
                 "notes": notes,
             })
 
+            # Запись отметки об отправке в колонку N (COL_COMPLETION = 13)
             status = make_status_value(email_addr or "резерв", FORCE_RESEND, False, is_reserve)
             for r in p["doctor_rows"]:
-                m_updates.append({
+                n_updates.append({
                     "row": r["row_number"],
-                    "col": COL_COMPLETION + 1,
+                    "col": COL_COMPLETION + 1,  # Google Sheets индексация с 1
                     "value": status,
                 })
 
@@ -270,9 +271,9 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
         print(f"BoTon_Log: пакетная запись SENT/ERROR ({len(sent_logs) + len(error_logs)})")
         append_log_entries(log_sheet, sent_logs + error_logs)
 
-    if m_updates:
-        print(f"Лист: пакетная запись M ({len(m_updates)} строк)")
-        batch_update_cells(tasks_sheet, m_updates, "запись статусов M")
+    if n_updates:
+        print(f"Лист: пакетная запись N (отметки об отправке) ({len(n_updates)} строк)")
+        batch_update_cells(tasks_sheet, n_updates, "запись отметок об отправке в N")
 
     print("\nИТОГ РАССЫЛКИ:")
     print(f"  Врачей обработано: {successful_doctors}")
@@ -281,12 +282,12 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
     print(f"  Пропущено по журналу: {skipped_logged}")
     print(f"  Врач не найден: {not_found}")
     print(f"  Ошибок: {errors}")
-    print(f"  Строк обновлено в M: {len(m_updates)}")
+    print(f"  Строк обновлено в N: {len(n_updates)}")
     print(f"  Всего заданий: {total_tasks}")
 
     return {
         "doctors": successful_doctors,
-        "rows": len(m_updates),
+        "rows": len(n_updates),
         "tasks": total_tasks,
         "errors": errors,
         "skipped": skipped_logged,
