@@ -53,10 +53,8 @@ def parse_date(value):
     """Парсинг даты из строки, объекта datetime или числа (Google Sheets serial date)."""
     if value is None:
         return None
-    # Если Google Sheets вернул объект datetime
     if isinstance(value, datetime):
         return value.date()
-    # Если Google Sheets вернул число (serial date)
     if isinstance(value, (int, float)):
         try:
             base = datetime(1899, 12, 30)
