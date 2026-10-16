@@ -10,6 +10,10 @@ from google_sheets import batch_update_cells
 from mailer import build_email_body, build_doctor_form_html, send_email
 
 
+def _env_flag(name):
+    return os.environ.get(name, "").strip().lower() == "true"
+
+
 def make_status_value(email_addr, is_resend, is_test, is_reserve):
     ts = now_moscow().strftime("%d.%m.%Y %H:%M")
     marks = []
@@ -31,6 +35,11 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
             "doctors": 0, "rows": 0, "tasks": 0, "errors": 0,
             "skipped": 0, "reserve": 0, "not_found": 0,
         }
+
+    # Флаг отключения вложений (для диагностики)
+    disable_attachments = _env_flag("DISABLE_ATTACHMENTS")
+    if disable_attachments:
+        print("⚠️ ВЛОЖЕНИЯ ОТКЛЮЧЕНЫ через DISABLE_ATTACHMENTS=true")
 
     grouped = group_by_doctor(rows)
     records = load_log_records(log_sheet)
@@ -81,13 +90,15 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
 
         body = build_email_body(doctor, patients, bot_id)
 
-        form_html = build_doctor_form_html(
-            doctor, patients, bot_id, target_date, email_addr or RESERVE_EMAILS[0]
-        )
+        # Генерируем вложение только если не отключено
         attachments = []
-        if form_html:
-            form_filename = f"otchet_{target_date.strftime('%d.%m.%Y')}.xhtml"
-            attachments.append((form_filename, form_html))
+        if not disable_attachments:
+            form_html = build_doctor_form_html(
+                doctor, patients, bot_id, target_date, email_addr or RESERVE_EMAILS[0]
+            )
+            if form_html:
+                form_filename = f"otchet_{target_date.strftime('%d.%m.%Y')}.xhtml"
+                attachments.append((form_filename, form_html))
 
         prepared.append({
             "doctor": doctor,
@@ -104,7 +115,7 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
     print(f"Подготовлено писем: {len(prepared)}")
 
     # ========================================================
-    # ТЕСТОВЫЙ РЕЖИМ: ОДНО СВОДНОЕ ПИСЬМО НА ВСЕ РЕЗЕРВНЫЕ АДРЕСА
+    # ТЕСТОВЫЙ РЕЖИМ
     # ========================================================
     if TEST_TO_RESERVE:
         if not prepared:
@@ -199,7 +210,6 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
     reserve_sent = 0
     errors = 0
 
-    # === ГЛОБАЛЬНАЯ ДИАГНОСТИКА SMTP (один раз в начале) ===
     smtp_host = os.environ.get("SMTP_HOST", "не задан")
     smtp_user = os.environ.get("SMTP_USER", "не задан")
     smtp_from = os.environ.get("SMTP_FROM_EMAIL", "не задан")
@@ -214,13 +224,10 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
     print(f"  SMTP_USER (логин):   {smtp_user}")
     print(f"  SMTP_FROM_EMAIL:     {smtp_from}")
     print(f"  FROM == USER?        {from_matches_user}")
+    print(f"  DISABLE_ATTACHMENTS: {disable_attachments}")
     if not from_matches_user:
-        print(f"  ⚠️ ВНИМАНИЕ: Адрес отправителя (FROM) НЕ совпадает с логином (USER)!")
-        print(f"     Яндекс может молча отбрасывать такие письма.")
-        print(f"     Исправьте секрет SMTP_FROM_EMAIL в GitHub Settings → Secrets.")
-        print(f"     Он должен быть равен: {smtp_user}")
+        print(f"  ⚠️ ВНИМАНИЕ: FROM != USER — Яндекс может отбрасывать письма!")
     print("=" * 60 + "\n")
-    # === КОНЕЦ ГЛОБАЛЬНОЙ ДИАГНОСТИКИ ===
 
     for p in prepared:
         doctor = p["doctor"]
@@ -229,16 +236,12 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
         is_reserve = p["is_reserve"]
 
         try:
-            # === ДИАГНОСТИКА КАЖДОГО ПИСЬМА ===
             print(f"\n📧 ОТПРАВКА: {doctor['name']}")
-            print(f"  FROM (от кого):      {smtp_from}")
-            print(f"  TO (кому):           {email_addr}")
-            print(f"  SUBJECT (тема):      {p['subject']}")
-            print(f"  Вложений:            {len(p.get('attachments', []))}")
-            if not from_matches_user:
-                print(f"  ⚠️ FROM != SMTP_USER — письмо может не дойти!")
+            print(f"  FROM:   {smtp_from}")
+            print(f"  TO:     {email_addr}")
+            print(f"  Тема:   {p['subject']}")
+            print(f"  Вложений: {len(p.get('attachments', []))}")
             print()
-            # === КОНЕЦ ДИАГНОСТИКИ ===
 
             if is_reserve:
                 for reserve_addr in RESERVE_EMAILS:
@@ -293,7 +296,7 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
         append_log_entries(log_sheet, sent_logs + error_logs)
 
     if n_updates:
-        print(f"Лист: пакетная запись N (отметки об отправке) ({len(n_updates)} строк)")
+        print(f"Лист: пакетная запись N ({len(n_updates)} строк)")
         batch_update_cells(tasks_sheet, n_updates, "запись отметок об отправке в N")
 
     print("\nИТОГ РАССЫЛКИ:")
