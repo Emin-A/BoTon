@@ -1,4 +1,4 @@
-"""SMTP, текст писем и диагностическая отправка."""
+"""SMTP и текст писем."""
 import os
 import ssl
 import smtplib
@@ -26,7 +26,7 @@ def _get_address_name(doctor):
 
 
 def build_email_body(doctor, patients, bot_id):
-    """Plain-text версия письма."""
+    """Plain-text версия письма с квадратиками."""
     address = _get_address_name(doctor)
     resend_mark = " (ПОВТОРНАЯ ОТПРАВКА)" if FORCE_RESEND else ""
 
@@ -37,14 +37,10 @@ def build_email_body(doctor, patients, bot_id):
         "",
         "КАК ОТВЕТИТЬ В КОНЦЕ СМЕНЫ:",
         "1) Нажмите «Ответить» (текст письма с квадратиками должен остаться).",
-        "2) Там, где задание сделано, замените пустой квадратик на отмеченный.",
-        "   Было: [ ]     Стало: [x]",
-        "3) Если консультация не состоялась, отметьте строку «консультация не состоялась».",
-        "4) Что не отмечено, считается не отработанным.",
-        "5) Не удаляйте из письма номера пациентов и строку BOTON-ID.",
-        "",
-        "ИЛИ ЗАПОЛНИТЕ УДОБНУЮ ФОРМУ (приложена к письму):",
-        "Откройте файл отчёт.xhtml в браузере, нажмите кнопки и отправьте ответ.",
+        "2) Там, где задание сделано, поставьте любой знак внутри квадратиков.",
+        "   Примеры: [x]  [✓]  [+ ]  [ *]  [v ]",
+        "3) Что не отмечено — считается не отработанным.",
+        "4) Не удаляйте из письма номера пациентов и строку BOTON-ID.",
         "",
         "=" * 50,
         "",
@@ -64,7 +60,6 @@ def build_email_body(doctor, patients, bot_id):
             if task["text"]:
                 lines.append(f"      {task['text']}")
             lines.append(f"      [ ] {key} — отработано")
-            lines.append(f"      [ ] {key} — консультация не состоялась")
         if multi:
             lines.append(f"   [ ] {pnum} — все задания отработаны")
         lines.append("")
@@ -78,44 +73,8 @@ def build_email_body(doctor, patients, bot_id):
     return "\n".join(lines)
 
 
-def build_doctor_form_html(doctor, patients, bot_id, target_date, to_email):
-    """Генерирует персональный XHTML-файл с формой для врача (офлайн)."""
-    template_path = os.path.join(os.path.dirname(__file__), "form_template.html")
-
-    if not os.path.exists(template_path):
-        return None
-
-    with open(template_path, "r", encoding="utf-8") as f:
-        template = f.read()
-
-    patients_data = []
-    for pnum, patient in enumerate(patients, start=1):
-        tasks = []
-        for t_idx, task in enumerate(patient["tasks"]):
-            key = f"{pnum}{TASK_LETTERS[t_idx]}" if len(patient["tasks"]) > 1 else f"{pnum}"
-            tasks.append({
-                "key": key,
-                "title": task["title"],
-                "letter": TASK_LETTERS[t_idx] if len(patient["tasks"]) > 1 else "",
-            })
-        patients_data.append({
-            "number": pnum,
-            "name": patient["patient_name"] or "ФИО не указано",
-            "id": patient["patient_id"] or "не указан",
-            "tasks": tasks,
-        })
-
-    html = template.replace("{{BOTON_ID}}", bot_id)
-    html = html.replace("{{DOCTOR_NAME}}", doctor["name"])
-    html = html.replace("{{DATE}}", target_date.strftime("%d.%m.%Y"))
-    html = html.replace("{{TO_EMAIL}}", to_email)
-    html = html.replace("{{PATIENTS_JSON}}", json.dumps(patients_data, ensure_ascii=False))
-
-    return html
-
-
-def send_email(to_email, subject, body, attachments=None):
-    """Отправка письма. Поддерживает вложения (XHTML-формы)."""
+def send_email(to_email, subject, body):
+    """Отправка plain-text письма."""
     host = os.environ.get("SMTP_HOST", "")
     port = int(os.environ.get("SMTP_PORT", "465"))
     user = os.environ.get("SMTP_USER", "")
@@ -132,12 +91,6 @@ def send_email(to_email, subject, body, attachments=None):
     msg["To"] = to_email
     msg["Subject"] = subject
     msg.attach(MIMEText(body, "plain", "utf-8"))
-
-    if attachments:
-        for filename, content in attachments:
-            part = MIMEText(content, "html", "utf-8")
-            part.add_header("Content-Disposition", "attachment", filename=filename)
-            msg.attach(part)
 
     ctx = ssl.create_default_context()
     with smtplib.SMTP_SSL(host, port, context=ctx, timeout=30) as s:
@@ -183,7 +136,7 @@ def send_doctor_diagnostic(rows, doctors, target_date, log_sheet=None):
         "=== ТЕСТ BoTon ===",
         f"Это письмо, которое получил бы врач: {doctor['name']}.",
         "ФИО пациентов и номера ОМС заменены на тестовые.",
-        "Ответьте на него так, как ответил бы врач (замените [ ] на [x]).",
+        "Ответьте на него так, как ответил бы врач (поставьте любой знак в [ ]).",
         "Результат разбора придёт вам отдельным письмом (до 30 минут).",
         "==================",
         "",
@@ -191,14 +144,6 @@ def send_doctor_diagnostic(rows, doctors, target_date, log_sheet=None):
     ])
 
     body = header + build_email_body(doctor, patients, bot_id)
-
-    form_html = build_doctor_form_html(
-        doctor, patients, bot_id, target_date, TEST_EMAIL
-    )
-    attachments = []
-    if form_html:
-        form_filename = f"otchet_{target_date.strftime('%d.%m.%Y')}.xhtml"
-        attachments.append((form_filename, form_html))
 
     print("\n--- ИНФОРМАЦИЯ О ПИСЬМЕ ---")
     print(f"Врач:               {doctor['name']}")
@@ -213,12 +158,12 @@ def send_doctor_diagnostic(rows, doctors, target_date, log_sheet=None):
     )
 
     try:
-        send_email(TEST_EMAIL, subject, body, attachments)
+        send_email(TEST_EMAIL, subject, body)
     except Exception as exc:
         print(f"❌ ОШИБКА ТЕСТОВОЙ ОТПРАВКИ: {exc}")
         return False
 
-    print("✅ ТЕСТОВОЕ ПИСЬМО ОТПРАВЛЕНО (с формой)")
+    print("✅ ТЕСТОВОЕ ПИСЬМО ОТПРАВЛЕНО")
 
     if log_sheet is not None:
         try:
