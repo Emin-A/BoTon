@@ -4,6 +4,7 @@ from time import sleep
 import gspread
 from google.oauth2.service_account import Credentials
 from config import *
+
 def sheets_call(operation, description="Google Sheets"):
     last_error = None
     for attempt in range(1, SHEETS_RETRY_ATTEMPTS + 1):
@@ -40,10 +41,10 @@ def get_google_client():
     return gspread.authorize(creds)
 
 def open_tasks_sheet(client):
-    """Всегда открывает Лист1 — рабочий лист с данными на сегодня/завтра."""
+    """Открывает fallback-лист таблицы заданий."""
     book = client.open_by_key(TASKS_SPREADSHEET_ID)
-    ws = book.worksheet(TASKS_SHEET_NAME)
-    print(f"Использую вкладку: '{TASKS_SHEET_NAME}'")
+    ws = book.worksheet(TASKS_SHEET_NAME_FALLBACK)
+    print(f"Использую вкладку: '{TASKS_SHEET_NAME_FALLBACK}'")
     return ws, book
 
 def open_doctors_sheet(client):
