@@ -1,8 +1,9 @@
-"""SMTP и текст писем (компактная печатная форма под A4 + ротация шуток)."""
+"""SMTP и текст писем (компактная форма под A4 + стихи: API с резервной подборкой)."""
 import os
 import ssl
 import smtplib
-import itertools
+import json
+import urllib.request
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from config import *
@@ -25,9 +26,21 @@ TASK_SUFFIX = "   Выполнено: ДА    /  нет, виноват :(. "
 FOOTER_LINE_1 = "Лист сохраните, вдруг когда-нибудь понадобится, покажете внукам."
 FOOTER_LINE_2 = "Царь молодец!"
 
-# Четверостишия про царя и холопов: ротация на каждое письмо, сдвиг по дате.
-# Хотите своё — допишите блок из четырёх строк в конец списка.
-POEMS = [
+# Настройки API стихов (по умолчанию Groq — бесплатный).
+POEM_API_URL = os.environ.get("POEM_API_URL", "https://api.groq.com/openai/v1/chat/completions")
+POEM_API_KEY = os.environ.get("POEM_API_KEY", "")
+POEM_API_MODEL = os.environ.get("POEM_API_MODEL", "llama-3.3-70b-versatile")
+
+POEM_PROMPT = (
+    "Напиши ОДНО смешное четверостишие (ровно 4 строки) про царя-начальника "
+    "и врачей-холопов в поликлинике: рассылка заданий по почте, КДП, липиды, "
+    "отчёты в конце смены. Стиль лёгкий и добрый, без обид, с рифмой. "
+    "Ответь только четырьмя строками стиха, без заголовков, кавычек и пояснений."
+)
+
+# Резервная подборка ГОТОВЫХ стихов (НЕ генератор).
+# Работает только пока нет API-ключа или API недоступен.
+CURATED_POEMS = [
 """Царь письмо отправил в семь часов утра,
 Холопам на почту — работать пора.
 Кто липиды правит, кто КДП ведёт,
@@ -62,14 +75,62 @@ POEMS = [
 Держава в порядке, и каждый доволен.""",
 ]
 
-# Счётчик писем внутри одного запуска (для ротации стихов)
-_poem_counter = itertools.count()
+# Счётчик писем внутри одного запуска (для ротации резервных стихов)
+_poem_index = 0
 
 
-def pick_poem(target_date):
-    """Выбирает следующее четверостишие: сдвиг по дате + счётчик писем."""
-    idx = (target_date.toordinal() + next(_poem_counter)) % len(POEMS)
-    return POEMS[idx]
+def generate_poem_via_api():
+    """Пробует сгенерировать стих через API. Возвращает None, если ключа нет."""
+    if not POEM_API_KEY.strip():
+        return None
+    body = json.dumps({
+        "model": POEM_API_MODEL,
+        "messages": [{"role": "user", "content": POEM_PROMPT}],
+        "temperature": 1.1,
+        "max_tokens": 120,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        POEM_API_URL,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {POEM_API_KEY}",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    text = data["choices"][0]["message"]["content"].strip()
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if len(lines) >= 4:
+        return "\n".join(lines[:4])
+    if lines:
+        return "\n".join(lines)
+    return None
+
+
+def pick_curated_poem(target_date):
+    """Ротация готовых стихов: сдвиг по дате + счётчик писем внутри запуска."""
+    global _poem_index
+    idx = (target_date.toordinal() + _poem_index) % len(CURATED_POEMS)
+    _poem_index += 1
+    return CURATED_POEMS[idx]
+
+
+def generate_poem(target_date):
+    """Стих: API → при любой осечке резервная подборка готовых стихов."""
+    if POEM_API_KEY.strip():
+        try:
+            poem = generate_poem_via_api()
+            if poem:
+                print("🎭 Стих: сгенерирован через API")
+                return poem
+            print("⚠️ API вернул пустой ответ → резервная подборка")
+        except Exception as exc:
+            print(f"⚠️ API стихов недоступен ({exc}) → резервная подборка")
+    else:
+        print("🎭 API-ключ POEM_API_KEY не задан → резервная подборка готовых стихов")
+    return pick_curated_poem(target_date)
 
 
 def _short_text(task):
@@ -84,7 +145,7 @@ def _short_text(task):
 
 
 def build_email_body(doctor, patients, bot_id, target_date, branch=""):
-    """Компактный лист заданий под A4 + свежее четверостишие в конце."""
+    """Компактный лист заданий под A4 + стих в конце."""
     wide = "=" * 44
     thin = "-" * 44
     total_tasks = sum(len(p["tasks"]) for p in patients)
@@ -121,7 +182,7 @@ def build_email_body(doctor, patients, bot_id, target_date, branch=""):
             lines.append(base + TASK_SUFFIX)
         lines.append("")
 
-    poem = pick_poem(target_date)
+    poem = generate_poem(target_date)
 
     lines += [
         thin,
