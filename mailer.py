@@ -14,6 +14,13 @@ TASK_SHORT = {
     3: "КДП СД",
 }
 
+# Хвостик после каждой строки задания
+TASK_SUFFIX = "   Выполнено: ДА    /  нет, виноват :(."
+
+# Шуточные строки подвала (первая — до номера листа, вторая — после)
+FOOTER_LINE_1 = "Лист сохраните, вдруг когда-нибудь понадобится, покажете внукам."
+FOOTER_LINE_2 = "Царь молодец!"
+
 
 def _short_text(task):
     """Убирает повторы из текста задания: 'провести КДП с диагнозом: X' → 'диагноз X'."""
@@ -58,16 +65,17 @@ def build_email_body(doctor, patients, bot_id, target_date, branch=""):
             short = TASK_SHORT.get(task["task_number"], task["title"])
             text = _short_text(task)
             if text:
-                lines.append(f"   [ ] {letter}{short}: {text}")
+                base = f"   [ ] {letter}{short}: {text}"
             else:
-                lines.append(f"   [ ] {letter}{short}")
+                base = f"   [ ] {letter}{short}"
+            lines.append(base + TASK_SUFFIX)
         lines.append("")
 
     lines += [
         thin,
-        "Отметьте выполненные задания в квадратиках [ ].",
-        "В конце смены передайте лист заведующему.",
-        f"Лист № {bot_id} | {now_moscow().strftime('%d.%m.%Y %H:%M')}",
+        FOOTER_LINE_1,
+        f"Лист № {bot_id} | {now_moscow().strftime('%d.%m.%Y %H:%M')}.",
+        FOOTER_LINE_2,
         wide,
     ]
     return "\n".join(lines)
