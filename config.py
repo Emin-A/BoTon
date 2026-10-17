@@ -3,22 +3,23 @@ import os
 from datetime import time
 from zoneinfo import ZoneInfo
 
-VERSION = "3.3"
+VERSION = "4.0"
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
+
 
 def _env_flag(name):
     """True, только если переменная окружения равна 'true'."""
     return os.environ.get(name, "").strip().lower() == "true"
 
+
+# Режимы запуска включаются кнопкой в GitHub (Run workflow).
 FORCE_RESEND = _env_flag("FORCE_RESEND")
 TEST_TO_RESERVE = _env_flag("TEST_TO_RESERVE")
-TEST_RECEIVE_ONLY = _env_flag("TEST_RECEIVE_ONLY")
-TEST_DOCTOR_DIAG = False
 
 TEST_EMAIL = "agaverdiev@mail.ru"
 REPORT_EMAIL = "eagaverdiev@mosmedzdrav.ru"
 
-# Список резервных адресов: сюда уходят письма в тестовом режиме
+# Резервные адреса: сюда уходят письма в тестовом режиме
 # и когда у врача не заполнен email.
 RESERVE_EMAILS = [
     "eagaverdiev@mosmedzdrav.ru",
@@ -31,17 +32,21 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
+# Таблица заданий
 TASKS_SPREADSHEET_ID = "13maufkGFPUdNE-d_i_nvC4l5xf3ParmuFCNYJ32wmVk"
 TASKS_SHEET_DATE_FORMAT = "%d.%m.%Y"
 TASKS_SHEET_NAME_FALLBACK = "Лист1"
 
+# База врачей
 DOCTORS_SPREADSHEET_ID = "1grwcVilkiwOI01UgWu4jrhOLV2GVM7TJ6TqlXE7enAU"
 DOCTORS_SHEET_NAME = "Врачи"
 
+# Журнал бота — в отдельной таблице
 LOG_SPREADSHEET_ID = "1grwcVilkiwOI01UgWu4jrhOLV2GVM7TJ6TqlXE7enAU"
 LOG_SHEET_NAME = "BoTon_Log"
 
-# Номера столбцов: индексация с нуля
+# Резервные номера столбцов (индексация с нуля).
+# Реальные колонки определяются АВТОМАТИЧЕСКИ по заголовкам (см. tasks.py).
 COL_DATE = 0
 COL_BRANCH = 1
 COL_DOCTOR = 2
@@ -49,25 +54,9 @@ COL_PATIENT_ID = 3
 COL_PATIENT_NAME = 4
 COL_SOURCE = 5
 COL_TASK1 = 6
-COL_STATUS1 = 7
-COL_TASK2 = 8
-COL_STATUS2 = 9
-COL_TASK3 = 10
-COL_STATUS3 = 11
-COL_EXECUTION = 12   # Колонка M — статус выполнения задания (пишет receiver)
-COL_COMPLETION = 13  # Колонка N — отметка об отправке (пишет sender)
-
-STATUS_PRIORITY = {
-    "": 0,
-    "❌ Не выполнено": 1,
-    "️ Частично": 2,
-    "✅ Выполнено": 3,
-}
-
-STATUS_DONE = "Задание отработано"
-STATUS_NOT_DONE = "Задание не отработано"
-STATUS_CONSULT_FAILED = "Консультация не состоялась"
-TEST_WRITE_TABLE = False
+COL_TASK2 = 7
+COL_TASK3 = 8
+COL_COMMENTS = 9  # колонка «Комментарии»: сюда sender пишет отметку об отправке
 
 BRANCH_KEYWORDS = [
     "ф2",
@@ -87,27 +76,19 @@ TASK_TITLES = {
     3: "Задание 3 (КДП СД 3 квартал)",
 }
 
-ASSIGNMENT_HOUR_START = 8
-ASSIGNMENT_HOUR_END = 12
+# Окно рассылки по московскому времени
+ASSIGNMENT_HOUR_START = 7
+ASSIGNMENT_HOUR_END = 23
 
 SHEETS_RETRY_ATTEMPTS = 5
 SHEETS_RETRY_BASE_SECONDS = 1.5
 
-IMAP_TIMEOUT = 20
-IMAP_LOOKBACK_DAYS = 3
-IMAP_MAX_PER_DOCTOR = 20
-IMAP_MAX_TOTAL = 100
-
+# Почта (SMTP): значения берутся из секретов GitHub Actions
 SMTP_HOST = os.environ.get("SMTP_HOST", "")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "465"))
 SMTP_USER = os.environ.get("SMTP_USER", "")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 SMTP_FROM_EMAIL = os.environ.get("SMTP_FROM_EMAIL", REPORT_EMAIL)
-
-IMAP_HOST = os.environ.get("IMAP_HOST", "")
-IMAP_PORT = int(os.environ.get("IMAP_PORT", "993"))
-IMAP_USER = os.environ.get("IMAP_USER", "")
-IMAP_PASSWORD = os.environ.get("IMAP_PASSWORD", "")
 
 LOG_HEADERS = [
     "Timestamp",
