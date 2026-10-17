@@ -19,17 +19,17 @@ DEFAULT_COLS = {
     "comments": COL_COMMENTS,
 }
 
-# Ключевые слова для поиска колонок по заголовкам (в нормализованном виде)
+# Ключевые слова для поиска колонок по заголовкам
 COLUMN_KEYWORDS = {
     "date": ("дата",),
     "branch": ("филиал",),
-    "doctor": ("врач",),
-    "patient_id": ("идентификатор", "омс"),
-    "patient_name": ("фио",),
-    "source": ("источник",),
+    "doctor": ("врач", "фио врача"),
+    "patient_id": ("идентификатор", "омс", "id"),
+    "patient_name": ("фио", "пациент"),
     "task1": ("задание 1", "липиды"),
     "task2": ("задание 2", "выгрузка"),
     "task3": ("задание 3", "сд"),
+    "source": ("источник",),
     "comments": ("комментар",),
 }
 
@@ -38,7 +38,15 @@ def detect_columns(header):
     """Определяет индексы колонок по заголовкам. Каждая колонка используется один раз."""
     cols = dict(DEFAULT_COLS)
     used = set()
-    for key, keywords in COLUMN_KEYWORDS.items():
+    
+    # Порядок поиска: сначала специфичные, потом общие
+    search_order = [
+        "date", "branch", "doctor", "patient_id", "patient_name",
+        "task1", "task2", "task3", "source", "comments"
+    ]
+    
+    for key in search_order:
+        keywords = COLUMN_KEYWORDS.get(key, ())
         for i, h in enumerate(header):
             if i in used:
                 continue
