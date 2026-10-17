@@ -20,11 +20,12 @@ on:
           - 'true'
           - 'false'
 
+  # Каждые 5 минут с 07:00 до 23:00 МСК:
+  # это же интервал срабатывания повтора после PENDING.
   schedule:
-    - cron: '*/15 4-20 * * *'
+    - cron: '*/5 4-20 * * *'
 
-# Защита от параллельных запусков: пока идёт одна рассылка,
-# вторая ждёт очереди (не отменяется), дубли писем исключены.
+# Защита от параллельных запусков: дубли писем исключены.
 concurrency:
   group: boton-send
   cancel-in-progress: false
@@ -40,6 +41,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
       - name: Install dependencies
         run: pip install -r requirements.txt
