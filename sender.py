@@ -5,7 +5,7 @@ from config import *
 from utils import normalize_email, now_moscow, get_signature
 from tasks import group_by_doctor, build_patients, build_response_task_map, make_bot_id
 from doctors import find_doctor_robust
-from log_store import load_log_records, get_send_state, append_log_entries
+from log_store import load_log_records, get_send_state_age, append_log_entries
 from google_sheets import batch_update_cells
 from mailer import build_email_body, send_email
 
@@ -47,16 +47,23 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date, c
         sig = get_signature(doctor["name"])
         bot_id = make_bot_id(target_date, sig, doctor_rows)
 
-        state = get_send_state(records, bot_id)
+        state, age_min = get_send_state_age(records, bot_id)
+        retry_pending = False
         if not TEST_TO_RESERVE:
             if state == "SENT" and not FORCE_RESEND:
                 print(f"Пропуск (уже SENT): {bot_id}")
                 skipped_logged += 1
                 continue
             if state == "PENDING" and not FORCE_RESEND:
-                print(f"Пропуск (PENDING): {bot_id}")
-                skipped_logged += 1
-                continue
+                if age_min is not None and age_min >= PENDING_RETRY_MINUTES:
+                    print(f"ПОВТОРНАЯ ОТПРАВКА: PENDING висит {age_min:.0f} мин "
+                          f"(порог {PENDING_RETRY_MINUTES} мин): {bot_id}")
+                    retry_pending = True
+                else:
+                    left = PENDING_RETRY_MINUTES - (age_min or 0)
+                    print(f"Пропуск (PENDING, повтор через ~{left:.0f} мин): {bot_id}")
+                    skipped_logged += 1
+                    continue
             if state == "SENT" and FORCE_RESEND:
                 print(f"ПОВТОРНАЯ ОТПРАВКА: {bot_id}")
 
@@ -67,7 +74,7 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date, c
         elif not email_addr:
             is_reserve = True
 
-        resend_mark = " (ПОВТОРНО)" if FORCE_RESEND else ""
+        resend_mark = " (ПОВТОРНО)" if (FORCE_RESEND or retry_pending) else ""
         test_mark = " [ТЕСТ]" if TEST_TO_RESERVE else ""
         branch = doctor_rows[0].get("branch", "")
 
@@ -87,6 +94,7 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date, c
             "subject": subject,
             "body": body,
             "is_reserve": is_reserve,
+            "retry_pending": retry_pending,
             "task_count": sum(len(r["tasks"]) for r in doctor_rows),
             "patient_count": len(patients),
         })
@@ -173,6 +181,13 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date, c
             "per_doctor": [],
         }
 
+    def _notes_for(p):
+        if p.get("retry_pending"):
+            return "ПОВТОР ПОСЛЕ PENDING"
+        if FORCE_RESEND:
+            return "ПОВТОРНАЯ ОТПРАВКА"
+        return ""
+
     pending = [{
         "event": "SEND",
         "bot_id": p["bot_id"],
@@ -181,7 +196,7 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date, c
         "email_address": p["email"] or ",".join(RESERVE_EMAILS),
         "mapping": p["mapping"],
         "result": "PENDING",
-        "notes": "ПОВТОРНАЯ ОТПРАВКА" if FORCE_RESEND else "",
+        "notes": _notes_for(p),
     } for p in prepared]
     print(f"BoTon_Log: пакетная запись PENDING ({len(pending)})")
     append_log_entries(log_sheet, pending)
@@ -206,6 +221,7 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date, c
     print(f"  SMTP_FROM_EMAIL: {smtp_from}")
     print(f"  FROM == USER?    {smtp_from == smtp_user}")
     print(f"  Колонка комментариев: {comments_col + 1}")
+    print(f"  Повтор после PENDING: через {PENDING_RETRY_MINUTES} мин")
     print("=" * 60 + "\n")
 
     for p in prepared:
@@ -233,7 +249,7 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date, c
                 "email_address": email_addr or ",".join(RESERVE_EMAILS),
                 "mapping": p["mapping"],
                 "result": "SENT",
-                "notes": "ПОВТОРНАЯ ОТПРАВКА" if FORCE_RESEND else "",
+                "notes": _notes_for(p),
             })
 
             comment = make_comment_value(email_addr, is_reserve)
