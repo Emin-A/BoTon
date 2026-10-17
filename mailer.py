@@ -1,15 +1,11 @@
-"""SMTP и текст писем."""
+"""SMTP и текст писем (печатная форма под A4)."""
 import os
 import ssl
 import smtplib
-import json
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from config import *
-from utils import normalize_text, now_moscow, get_signature
-from tasks import build_patients, make_bot_id, group_by_doctor, build_response_task_map
-from doctors import find_doctor_robust
-from log_store import append_log_entries
+from utils import normalize_text, now_moscow
 
 
 def _get_address_name(doctor):
@@ -25,26 +21,25 @@ def _get_address_name(doctor):
     return doctor["name"]
 
 
-def build_email_body(doctor, patients, bot_id):
-    """Plain-text версия письма с квадратиками."""
+def build_email_body(doctor, patients, bot_id, target_date, branch=""):
+    """Письмо-лист заданий, удобное для печати на A4."""
     address = _get_address_name(doctor)
-    resend_mark = " (ПОВТОРНАЯ ОТПРАВКА)" if FORCE_RESEND else ""
+    wide = "=" * 46
+    thin = "-" * 46
 
     lines = [
-        f"Здравствуйте, {address}!",
-        "",
-        "Вам назначены задания по пациентам, записанным на сегодня.",
-        "",
-        "КАК ОТВЕТИТЬ В КОНЦЕ СМЕНЫ:",
-        "1) Нажмите «Ответить» (текст письма с квадратиками должен остаться).",
-        "2) Там, где задание сделано, поставьте любой знак внутри квадратиков.",
-        "   Примеры: [x]  [✓]  [+ ]  [ *]  [v ]",
-        "3) Что не отмечено — считается не отработанным.",
-        "4) Не удаляйте из письма номера пациентов и строку BOTON-ID.",
-        "",
-        "=" * 50,
-        "",
+        wide,
+        "          ЛИСТ ЗАДАНИЙ НА СМЕНУ",
+        f"          Дата: {target_date.strftime('%d.%m.%Y')}",
+        wide,
+        f"Врач: {doctor['name']}",
+        f"Обращение: {address}",
     ]
+    if branch:
+        lines.append(f"Филиал: {branch}")
+    lines.append(f"Пациентов в работе: {len(patients)}")
+    lines.append(thin)
+    lines.append("")
 
     for pnum, patient in enumerate(patients, start=1):
         p_name = patient["patient_name"] or "ФИО не указано"
@@ -52,24 +47,25 @@ def build_email_body(doctor, patients, bot_id):
         tasks = patient["tasks"]
         multi = len(tasks) > 1
 
-        lines.append(f"{pnum}. {p_name} — ОМС/ID: {p_id}")
+        lines.append(f"ПАЦИЕНТ {pnum}. {p_name}")
+        lines.append(f"   ОМС/ID: {p_id}")
         for t_idx, task in enumerate(tasks):
-            key = f"{pnum}{TASK_LETTERS[t_idx]}" if multi else f"{pnum}"
             prefix = f"{TASK_LETTERS[t_idx]}) " if multi else ""
-            lines.append(f"   {prefix}{task['title']}")
+            lines.append(f"   [ ] {prefix}{task['title']}")
             if task["text"]:
-                lines.append(f"      {task['text']}")
-            lines.append(f"      [ ] {key} — отработано")
-        if multi:
-            lines.append(f"   [ ] {pnum} — все задания отработаны")
+                lines.append(f"       {task['text']}")
         lines.append("")
 
-    lines.extend([
-        "=" * 50,
-        f"BOTON-ID: {bot_id}{resend_mark}",
-        "",
-        f"Отправлено: {now_moscow().strftime('%d.%m.%Y %H:%M')} МСК",
-    ])
+    lines.append(thin)
+    lines.append("КАК РАБОТАТЬ С ЛИСТОМ:")
+    lines.append("  1. Распечатайте этот лист на A4 или держите открытым на экране.")
+    lines.append("  2. В течение смены отмечайте выполненные задания ручкой")
+    lines.append("     в квадратиках [ ].")
+    lines.append("  3. В конце смены передайте лист заведующему отделением.")
+    lines.append(thin)
+    lines.append(f"Номер листа: {bot_id}")
+    lines.append(f"Сформировано: {now_moscow().strftime('%d.%m.%Y %H:%M')} МСК")
+    lines.append(wide)
     return "\n".join(lines)
 
 
@@ -96,89 +92,3 @@ def send_email(to_email, subject, body):
     with smtplib.SMTP_SSL(host, port, context=ctx, timeout=30) as s:
         s.login(user, password)
         s.send_message(msg)
-
-
-def send_doctor_diagnostic(rows, doctors, target_date, log_sheet=None):
-    """Тест: письмо одного врача уходит на TEST_EMAIL."""
-    print("\n" + "=" * 60)
-    print("ТЕСТ: ПИСЬМО ОДНОГО ВРАЧА → TEST_EMAIL")
-    print("=" * 60)
-    print(f"Получатель теста: {TEST_EMAIL}")
-
-    if not rows:
-        print("Нет подходящих строк для теста (см. статистику выше).")
-        return False
-
-    doctor, doctor_rows = None, None
-    for _, candidate_rows in group_by_doctor(rows).items():
-        found = find_doctor_robust(candidate_rows[0]["doctor_name"], doctors)
-        if found:
-            doctor, doctor_rows = found, candidate_rows
-            break
-
-    if not doctor:
-        print("Ни один врач из строк не найден в базе — тест невозможен.")
-        return False
-
-    patients = []
-    for idx, p in enumerate(build_patients(doctor_rows), start=1):
-        p = dict(p)
-        p["patient_name"] = f"Тестовый пациент {idx}"
-        p["patient_id"] = "000000"
-        patients.append(p)
-
-    mapping = build_response_task_map(patients)
-    sig = get_signature(doctor["name"])
-    real_id = make_bot_id(target_date, sig, doctor_rows)
-    bot_id = f"BOTON-TEST-{real_id[len('BOTON-'):]}-{now_moscow().strftime('%H%M%S')}"
-
-    header = "\n".join([
-        "=== ТЕСТ BoTon ===",
-        f"Это письмо, которое получил бы врач: {doctor['name']}.",
-        "ФИО пациентов и номера ОМС заменены на тестовые.",
-        "Ответьте на него так, как ответил бы врач (поставьте любой знак в [ ]).",
-        "Результат разбора придёт вам отдельным письмом (до 30 минут).",
-        "==================",
-        "",
-        "",
-    ])
-
-    body = header + build_email_body(doctor, patients, bot_id)
-
-    print("\n--- ИНФОРМАЦИЯ О ПИСЬМЕ ---")
-    print(f"Врач:               {doctor['name']}")
-    print(f"Пациентов в письме: {len(patients)}")
-    print(f"Заданий:            {sum(len(p['tasks']) for p in patients)}")
-    print(f"BOTON-ID:           {bot_id}")
-    print(f"Дата:               {target_date.strftime('%d.%m.%Y')}")
-
-    subject = (
-        f"[ТЕСТ BoTon] Задания врача {doctor['name']} за "
-        f"{target_date.strftime('%d.%m.%Y')} [BOTON-ID:{bot_id}]"
-    )
-
-    try:
-        send_email(TEST_EMAIL, subject, body)
-    except Exception as exc:
-        print(f"❌ ОШИБКА ТЕСТОВОЙ ОТПРАВКИ: {exc}")
-        return False
-
-    print("✅ ТЕСТОВОЕ ПИСЬМО ОТПРАВЛЕНО")
-
-    if log_sheet is not None:
-        try:
-            append_log_entries(log_sheet, [{
-                "event": "SEND",
-                "bot_id": bot_id,
-                "target_date": target_date.strftime("%d.%m.%Y"),
-                "doctor": doctor["name"],
-                "email_address": TEST_EMAIL,
-                "mapping": mapping,
-                "result": "SENT",
-                "notes": "ТЕСТ",
-            }])
-        except Exception as exc:
-            print(f"⚠️ Не удалось записать тест в журнал: {exc}")
-            return False
-
-    return True
