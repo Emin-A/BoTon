@@ -54,7 +54,7 @@ def main():
     doctors = load_doctors(doctors_sheet)
     print(f"👨‍⚕️ Загружено врачей: {len(doctors)}")
 
-    # Журнал — в отдельной таблице, создаётся автоматически если отсутствует
+    # Журнал — в той же таблице, что и врачи. Создаётся автоматически, если отсутствует.
     log_spreadsheet = gc.open_by_key(LOG_SPREADSHEET_ID)
     log_sheet = ensure_log_sheet(log_spreadsheet)
 
