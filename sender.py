@@ -94,7 +94,7 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date, c
     print(f"Подготовлено писем: {len(prepared)}")
 
     # ========================================================
-    # ТЕСТОВЫЙ РЕЖИМ: ОДНО СВОДНОЕ ПИСЬМО НА ВСЕ РЕЗЕРВНЫЕ АДРЕСА
+    # ТЕСТОВЫЙ РЕЖИМ
     # ========================================================
     if TEST_TO_RESERVE:
         if not prepared:
