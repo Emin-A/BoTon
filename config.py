@@ -3,7 +3,7 @@ import os
 from datetime import time
 from zoneinfo import ZoneInfo
 
-VERSION = "4.0"
+VERSION = "4.1"
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
 
@@ -26,6 +26,10 @@ RESERVE_EMAILS = [
     "agaverdiev@mail.ru",
 ]
 
+# Если запись PENDING висит дольше этого времени — запуск считает отправку
+# погибшей и отправляет письмо повторно.
+PENDING_RETRY_MINUTES = 5
+
 SERVICE_ACCOUNT_FILE = "credentials.json"
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -41,7 +45,7 @@ TASKS_SHEET_NAME_FALLBACK = "Лист1"
 DOCTORS_SPREADSHEET_ID = "1grwcVilkiwOI01UgWu4jrhOLV2GVM7TJ6TqlXE7enAU"
 DOCTORS_SHEET_NAME = "Врачи"
 
-# Журнал бота — в отдельной таблице
+# Журнал бота (вкладка BoTon_Log в таблице врачей)
 LOG_SPREADSHEET_ID = "1grwcVilkiwOI01UgWu4jrhOLV2GVM7TJ6TqlXE7enAU"
 LOG_SHEET_NAME = "BoTon_Log"
 
