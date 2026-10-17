@@ -1,5 +1,6 @@
 """Хранилище событий BoTon_Log."""
 import json
+from datetime import datetime
 import gspread
 from config import *
 from google_sheets import sheets_call
@@ -7,6 +8,7 @@ from utils import now_moscow
 
 LOG_WIDTH = len(LOG_HEADERS)          # 10 колонок: A..J
 LAST_COL_LETTER = "J"
+LOG_TS_FORMAT = "%d.%m.%Y %H:%M:%S"
 
 
 def ensure_log_sheet(book):
@@ -32,7 +34,7 @@ def ensure_log_sheet(book):
 def make_log_row(event, bot_id="", target_date="", doctor="", email_address="",
                  mapping=None, message_id="", result="", notes=""):
     return [
-        now_moscow().strftime("%d.%m.%Y %H:%M:%S"),
+        now_moscow().strftime(LOG_TS_FORMAT),
         event, bot_id, target_date, doctor, email_address,
         json.dumps(mapping or {}, ensure_ascii=False),
         message_id, result, notes,
@@ -111,12 +113,32 @@ def load_log_records(log_sheet):
     return records
 
 
+def _parse_log_ts(value):
+    """Разбирает отметку времени журнала. Возвращает datetime или None."""
+    try:
+        return datetime.strptime(str(value).strip(), LOG_TS_FORMAT)
+    except Exception:
+        return None
+
+
+def get_send_state_age(records, bot_id):
+    """Возвращает (статус, возраст записи в минутах).
+    Статус: 'SENT' / 'PENDING' / ''. Возраст: float или None."""
+    for r in reversed(records):
+        if r["event"] == "SEND" and r["bot_id"] == bot_id \
+                and r["result"] in ("SENT", "PENDING"):
+            ts = _parse_log_ts(r["timestamp"])
+            if ts is None:
+                return r["result"], None
+            age = (now_moscow().replace(tzinfo=None) - ts).total_seconds() / 60.0
+            return r["result"], age
+    return "", None
+
+
 def get_send_state(records, bot_id):
     """Последний статус отправки для BOTON-ID: SENT / PENDING / ''."""
-    for r in reversed(records):
-        if r["event"] == "SEND" and r["bot_id"] == bot_id and r["result"] in ("SENT", "PENDING"):
-            return r["result"]
-    return ""
+    state, _ = get_send_state_age(records, bot_id)
+    return state
 
 
 def find_log_by_bot_id(records, bot_id):
