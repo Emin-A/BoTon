@@ -23,6 +23,12 @@ on:
   schedule:
     - cron: '*/15 4-20 * * *'
 
+# Защита от параллельных запусков: пока идёт одна рассылка,
+# вторая ждёт очереди (не отменяется), дубли писем исключены.
+concurrency:
+  group: boton-send
+  cancel-in-progress: false
+
 jobs:
   send-assignments:
     runs-on: ubuntu-latest
@@ -46,6 +52,7 @@ jobs:
         env:
           FORCE_RESEND: ${{ github.event.inputs.force_resend || 'false' }}
           TEST_TO_RESERVE: ${{ github.event.inputs.test_to_reserve || 'false' }}
+          POEM_API_KEY: ${{ secrets.POEM_API_KEY }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
