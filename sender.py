@@ -25,6 +25,7 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date, c
         return {
             "doctors": 0, "rows": 0, "tasks": 0, "errors": 0,
             "skipped": 0, "reserve": 0, "not_found": 0,
+            "per_doctor": [],
         }
 
     grouped = group_by_doctor(rows)
@@ -86,6 +87,8 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date, c
             "subject": subject,
             "body": body,
             "is_reserve": is_reserve,
+            "task_count": sum(len(r["tasks"]) for r in doctor_rows),
+            "patient_count": len(patients),
         })
 
     print(f"Подготовлено писем: {len(prepared)}")
@@ -99,6 +102,7 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date, c
             return {
                 "doctors": 0, "rows": 0, "tasks": 0, "errors": 0,
                 "skipped": skipped_logged, "reserve": 0, "not_found": not_found,
+                "per_doctor": [],
             }
 
         print(f"\nТестовый режим: формирую ОДНО письмо со всеми {len(prepared)} письмами")
@@ -112,10 +116,18 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date, c
             "",
         ]
         total_tasks = 0
+        per_doctor = []
         for idx, p in enumerate(prepared, start=1):
-            total_tasks += sum(len(r["tasks"]) for r in p["doctor_rows"])
+            tasks_n = p["task_count"]
+            total_tasks += tasks_n
+            per_doctor.append({
+                "doctor": p["doctor"]["name"],
+                "tasks": tasks_n,
+                "patients": p["patient_count"],
+            })
             parts.append(f"----- ПИСЬМО №{idx} ДЛЯ: {p['doctor']['name']} -----")
             parts.append(f"Кому (в боевом режиме): {p['doctor']['email'] or 'НЕТ EMAIL'}")
+            parts.append(f"Заданий: {tasks_n} | Пациентов: {p['patient_count']}")
             parts.append(f"Тема: {p['subject']}")
             parts.append("")
             parts.append(p["body"])
@@ -140,12 +152,14 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date, c
                 "skipped": skipped_logged,
                 "reserve": len(prepared),
                 "not_found": not_found,
+                "per_doctor": per_doctor,
             }
         except Exception as exc:
             print(f"❌ ОШИБКА ТЕСТОВОЙ ОТПРАВКИ: {exc}")
             return {
                 "doctors": 0, "rows": 0, "tasks": 0, "errors": 1,
                 "skipped": skipped_logged, "reserve": 0, "not_found": not_found,
+                "per_doctor": [],
             }
 
     # ========================================================
@@ -156,6 +170,7 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date, c
         return {
             "doctors": 0, "rows": 0, "tasks": 0, "errors": 0,
             "skipped": skipped_logged, "reserve": 0, "not_found": not_found,
+            "per_doctor": [],
         }
 
     pending = [{
@@ -178,6 +193,7 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date, c
     total_tasks = 0
     reserve_sent = 0
     errors = 0
+    per_doctor = []
 
     comments_col = cols["comments"]
 
@@ -228,8 +244,14 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date, c
                     "value": comment,
                 })
 
+            per_doctor.append({
+                "doctor": doctor["name"],
+                "tasks": p["task_count"],
+                "patients": p["patient_count"],
+            })
+
             successful_doctors += 1
-            total_tasks += sum(len(r["tasks"]) for r in p["doctor_rows"])
+            total_tasks += p["task_count"]
             if is_reserve:
                 reserve_sent += 1
             sleep(2)
@@ -274,4 +296,5 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date, c
         "skipped": skipped_logged,
         "reserve": reserve_sent,
         "not_found": not_found,
+        "per_doctor": per_doctor,
     }
