@@ -59,7 +59,7 @@ def main():
     log_spreadsheet = gc.open_by_key(LOG_SPREADSHEET_ID)
     log_sheet = ensure_log_sheet(log_spreadsheet)
 
-    # Загрузка строк + автоопределение колонок
+    # Загрузка строк + автоопределение колонок (возвращает 3 значения!)
     rows, stats, cols = load_task_rows(tasks_sheet, target_date)
     print_stats(stats)
 
@@ -67,7 +67,7 @@ def main():
         print("⚠️ Нет строк для отправки. Завершаю работу.")
         return
 
-    # Отправка
+    # Отправка (передаём cols для записи в правильную колонку комментариев)
     result = send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date, cols)
     print(f"\n🏁 Рассылка завершена. Результат: {result}")
 
