@@ -1,71 +1,75 @@
-"""SMTP и текст писем (печатная форма под A4)."""
+"""SMTP и текст писем (компактная печатная форма под A4)."""
 import os
 import ssl
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from config import *
-from utils import normalize_text, now_moscow
+from utils import now_moscow
+
+# Короткие названия заданий для компактного листа
+TASK_SHORT = {
+    1: "липиды",
+    2: "КДП выгрузка",
+    3: "КДП СД",
+}
 
 
-def _get_address_name(doctor):
-    """Возвращает обращение к врачу: 'Имя Отчество'."""
-    normalized = normalize_text(doctor["name"])
-    parts = normalized.split()
-    first = parts[1].capitalize() if len(parts) >= 2 else ""
-    patr = parts[2].capitalize() if len(parts) >= 3 else ""
-    if first and patr:
-        return f"{first} {patr}"
-    elif first:
-        return first
-    return doctor["name"]
+def _short_text(task):
+    """Убирает повторы из текста задания: 'провести КДП с диагнозом: X' → 'диагноз X'."""
+    text = (task.get("text") or "").strip()
+    low = text.lower()
+    if low.startswith("провести кдп с диагнозом:"):
+        return ("диагноз " + text[len("провести кдп с диагнозом:"):]).strip()
+    if low in ("провести кдп", "провести кдп."):
+        return ""
+    return text
 
 
 def build_email_body(doctor, patients, bot_id, target_date, branch=""):
-    """Письмо-лист заданий, удобное для печати на A4."""
-    address = _get_address_name(doctor)
-    wide = "=" * 46
-    thin = "-" * 46
+    """Компактный лист заданий, удобный для печати на A4."""
+    wide = "=" * 44
+    thin = "-" * 44
+    total_tasks = sum(len(p["tasks"]) for p in patients)
 
     lines = [
         wide,
-        "          ЛИСТ ЗАДАНИЙ НА СМЕНУ",
-        f"          Дата: {target_date.strftime('%d.%m.%Y')}",
-        wide,
-        f"Врач: {doctor['name']}",
-        f"Обращение: {address}",
+        f"  ЛИСТ ЗАДАНИЙ НА {target_date.strftime('%d.%m.%Y')}",
     ]
     if branch:
-        lines.append(f"Филиал: {branch}")
-    lines.append(f"Пациентов в работе: {len(patients)}")
-    lines.append(thin)
-    lines.append("")
+        lines.append(f"  Филиал: {branch}")
+    lines += [
+        wide,
+        f"Врач: {doctor['name']}",
+        f"Пациентов: {len(patients)} | Заданий: {total_tasks}",
+        thin,
+        "",
+    ]
 
     for pnum, patient in enumerate(patients, start=1):
         p_name = patient["patient_name"] or "ФИО не указано"
         p_id = patient["patient_id"] or "не указан"
+        lines.append(f"{pnum}. {p_name} — ОМС {p_id}")
+
         tasks = patient["tasks"]
         multi = len(tasks) > 1
-
-        lines.append(f"ПАЦИЕНТ {pnum}. {p_name}")
-        lines.append(f"   ОМС/ID: {p_id}")
         for t_idx, task in enumerate(tasks):
-            prefix = f"{TASK_LETTERS[t_idx]}) " if multi else ""
-            lines.append(f"   [ ] {prefix}{task['title']}")
-            if task["text"]:
-                lines.append(f"       {task['text']}")
+            letter = f"{TASK_LETTERS[t_idx]}) " if multi else ""
+            short = TASK_SHORT.get(task["task_number"], task["title"])
+            text = _short_text(task)
+            if text:
+                lines.append(f"   [ ] {letter}{short}: {text}")
+            else:
+                lines.append(f"   [ ] {letter}{short}")
         lines.append("")
 
-    lines.append(thin)
-    lines.append("КАК РАБОТАТЬ С ЛИСТОМ:")
-    lines.append("  1. Распечатайте этот лист на A4 или держите открытым на экране.")
-    lines.append("  2. В течение смены отмечайте выполненные задания ручкой")
-    lines.append("     в квадратиках [ ].")
-    lines.append("  3. В конце смены передайте лист заведующему отделением.")
-    lines.append(thin)
-    lines.append(f"Номер листа: {bot_id}")
-    lines.append(f"Сформировано: {now_moscow().strftime('%d.%m.%Y %H:%M')} МСК")
-    lines.append(wide)
+    lines += [
+        thin,
+        "Отметьте выполненные задания в квадратиках [ ].",
+        "В конце смены передайте лист заведующему.",
+        f"Лист № {bot_id} | {now_moscow().strftime('%d.%m.%Y %H:%M')}",
+        wide,
+    ]
     return "\n".join(lines)
 
 
