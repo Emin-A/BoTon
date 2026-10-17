@@ -10,20 +10,15 @@ from google_sheets import batch_update_cells
 from mailer import build_email_body, send_email
 
 
-def make_status_value(email_addr, is_resend, is_test, is_reserve):
+def make_comment_value(email_addr, is_reserve):
+    """Текст отметки в колонке «Комментарии»."""
     ts = now_moscow().strftime("%d.%m.%Y %H:%M")
-    marks = []
-    if is_test:
-        marks.append("ТЕСТ")
-    if is_resend:
-        marks.append("ПОВТОРНО")
-    mark = f" ({', '.join(marks)})" if marks else ""
     if is_reserve:
-        return f"Отправлено{mark} на резервную почту {ts}"
-    return f"Отправлено{mark} на {email_addr} {ts}"
+        return f"Отправлено на резервную почту {ts}"
+    return f"Отправлено {email_addr} {ts}"
 
 
-def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
+def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date, cols):
     print("\n----- ОТПРАВКА ПИСЕМ ВРАЧАМ -----")
     if not rows:
         print("Нет строк для обработки.")
@@ -73,13 +68,14 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
 
         resend_mark = " (ПОВТОРНО)" if FORCE_RESEND else ""
         test_mark = " [ТЕСТ]" if TEST_TO_RESERVE else ""
+        branch = doctor_rows[0].get("branch", "")
 
         if TEST_TO_RESERVE:
-            subject = f"[ТЕСТ ВРАЧА: {doctor['name']}] Задания для пациентов на {target_date.strftime('%d.%m.%Y')}{test_mark}"
+            subject = f"[ТЕСТ ВРАЧА: {doctor['name']}] Задания на {target_date.strftime('%d.%m.%Y')}{test_mark}"
         else:
-            subject = f"Задания для пациентов на {target_date.strftime('%d.%m.%Y')}{resend_mark} [BOTON-ID:{bot_id}]"
+            subject = f"Задания на {target_date.strftime('%d.%m.%Y')}{resend_mark} [BOTON-ID:{bot_id}]"
 
-        body = build_email_body(doctor, patients, bot_id)
+        body = build_email_body(doctor, patients, bot_id, target_date, branch)
 
         prepared.append({
             "doctor": doctor,
@@ -105,12 +101,12 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
                 "skipped": skipped_logged, "reserve": 0, "not_found": not_found,
             }
 
-        print(f"\nТестовый режим: формирую ОДНО письмо со всеми {len(prepared)} письмами врачам")
+        print(f"\nТестовый режим: формирую ОДНО письмо со всеми {len(prepared)} письмами")
         parts = [
             f"ТЕСТОВЫЙ ПРОГОН BoTon v{VERSION}",
             f"Дата: {target_date.strftime('%d.%m.%Y')}",
             f"Врачей в тесте: {len(prepared)}",
-            "Все задания идут на резервную почту, реальным врачам не отправляются.",
+            "Реальным врачам ничего не отправляется.",
             "",
             "=" * 60,
             "",
@@ -136,7 +132,6 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
             for reserve_addr in RESERVE_EMAILS:
                 send_email(reserve_addr, combined_subject, combined_body)
                 print(f"✅ ТЕСТОВОЕ СВОДНОЕ ПИСЬМО отправлено на {reserve_addr}")
-            print(f"   Содержит {len(prepared)} писем врачам")
             return {
                 "doctors": len(prepared),
                 "rows": sum(len(p["doctor_rows"]) for p in prepared),
@@ -178,28 +173,23 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
 
     sent_logs = []
     error_logs = []
-    n_updates = []
+    comment_updates = []
     successful_doctors = 0
     total_tasks = 0
     reserve_sent = 0
     errors = 0
 
-    smtp_host = os.environ.get("SMTP_HOST", "не задан")
-    smtp_user = os.environ.get("SMTP_USER", "не задан")
-    smtp_from = os.environ.get("SMTP_FROM_EMAIL", "не задан")
-    smtp_port = os.environ.get("SMTP_PORT", "не задан")
-    from_matches_user = (smtp_from == smtp_user)
+    comments_col = cols["comments"]
 
+    smtp_from = os.environ.get("SMTP_FROM_EMAIL", "не задан")
+    smtp_user = os.environ.get("SMTP_USER", "не задан")
     print("\n" + "=" * 60)
-    print(" ДИАГНОСТИКА SMTP-НАСТРОЕК")
+    print(" ДИАГНОСТИКА SMTP")
     print("=" * 60)
-    print(f"  SMTP_HOST:           {smtp_host}")
-    print(f"  SMTP_PORT:           {smtp_port}")
-    print(f"  SMTP_USER (логин):   {smtp_user}")
-    print(f"  SMTP_FROM_EMAIL:     {smtp_from}")
-    print(f"  FROM == USER?        {from_matches_user}")
-    if not from_matches_user:
-        print(f"  ⚠️ ВНИМАНИЕ: FROM != USER — Яндекс может отбрасывать письма!")
+    print(f"  SMTP_USER:       {smtp_user}")
+    print(f"  SMTP_FROM_EMAIL: {smtp_from}")
+    print(f"  FROM == USER?    {smtp_from == smtp_user}")
+    print(f"  Колонка комментариев: {comments_col + 1}")
     print("=" * 60 + "\n")
 
     for p in prepared:
@@ -209,21 +199,16 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
         is_reserve = p["is_reserve"]
 
         try:
-            print(f"\n📧 ОТПРАВКА: {doctor['name']}")
-            print(f"  FROM:   {smtp_from}")
-            print(f"  TO:     {email_addr}")
-            print(f"  Тема:   {p['subject']}")
-            print()
+            print(f"📧 ОТПРАВКА: {doctor['name']} -> {email_addr or 'РЕЗЕРВ'}")
 
             if is_reserve:
                 for reserve_addr in RESERVE_EMAILS:
                     send_email(reserve_addr, p["subject"], p["body"])
-                    print(f"✅ Резерв: {doctor['name']} -> {reserve_addr}")
+                    print(f"   ✅ Резерв: {reserve_addr}")
             else:
                 send_email(email_addr, p["subject"], p["body"])
-                print(f"✅ Отправлено: {doctor['name']} -> {email_addr}")
+                print(f"   ✅ Отправлено")
 
-            notes = "ПОВТОРНАЯ ОТПРАВКА" if FORCE_RESEND else ""
             sent_logs.append({
                 "event": "SEND",
                 "bot_id": bot_id,
@@ -232,15 +217,15 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
                 "email_address": email_addr or ",".join(RESERVE_EMAILS),
                 "mapping": p["mapping"],
                 "result": "SENT",
-                "notes": notes,
+                "notes": "ПОВТОРНАЯ ОТПРАВКА" if FORCE_RESEND else "",
             })
 
-            status = make_status_value(email_addr or "резерв", FORCE_RESEND, False, is_reserve)
+            comment = make_comment_value(email_addr, is_reserve)
             for r in p["doctor_rows"]:
-                n_updates.append({
+                comment_updates.append({
                     "row": r["row_number"],
-                    "col": COL_COMPLETION + 1,
-                    "value": status,
+                    "col": comments_col + 1,
+                    "value": comment,
                 })
 
             successful_doctors += 1
@@ -261,15 +246,15 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
                 "result": "ERROR",
                 "notes": str(exc),
             })
-            print(f"❌ Ошибка отправки {doctor['name']}: {exc}")
+            print(f"   ❌ Ошибка отправки: {exc}")
 
     if sent_logs or error_logs:
         print(f"BoTon_Log: пакетная запись SENT/ERROR ({len(sent_logs) + len(error_logs)})")
         append_log_entries(log_sheet, sent_logs + error_logs)
 
-    if n_updates:
-        print(f"Лист: пакетная запись N ({len(n_updates)} строк)")
-        batch_update_cells(tasks_sheet, n_updates, "запись отметок об отправке в N")
+    if comment_updates:
+        print(f"Таблица: запись отметок об отправке в колонку {comments_col + 1} ({len(comment_updates)} строк)")
+        batch_update_cells(tasks_sheet, comment_updates, "запись комментариев")
 
     print("\nИТОГ РАССЫЛКИ:")
     print(f"  Врачей обработано: {successful_doctors}")
@@ -278,12 +263,12 @@ def send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date):
     print(f"  Пропущено по журналу: {skipped_logged}")
     print(f"  Врач не найден: {not_found}")
     print(f"  Ошибок: {errors}")
-    print(f"  Строк обновлено в N: {len(n_updates)}")
+    print(f"  Строк обновлено в комментариях: {len(comment_updates)}")
     print(f"  Всего заданий: {total_tasks}")
 
     return {
         "doctors": successful_doctors,
-        "rows": len(n_updates),
+        "rows": len(comment_updates),
         "tasks": total_tasks,
         "errors": errors,
         "skipped": skipped_logged,
