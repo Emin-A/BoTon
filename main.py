@@ -18,6 +18,7 @@ from tasks import load_task_rows, print_stats
 from sender import send_today_assignments
 from doctors import load_doctors
 from log_store import ensure_log_sheet
+from report import send_summary_report
 
 
 def get_tasks_sheet_by_date(spreadsheet, target_date):
@@ -54,12 +55,12 @@ def main():
     doctors = load_doctors(doctors_sheet)
     print(f"👨‍⚕️ Загружено врачей: {len(doctors)}")
 
-    # Журнал — в той же таблице, что и врачи. Создаётся автоматически, если отсутствует.
+    # Журнал — в таблице врачей, создаётся автоматически если отсутствует
     log_spreadsheet = gc.open_by_key(LOG_SPREADSHEET_ID)
     log_sheet = ensure_log_sheet(log_spreadsheet)
 
-    # Загрузка строк
-    rows, stats = load_task_rows(tasks_sheet, target_date)
+    # Загрузка строк + автоопределение колонок
+    rows, stats, cols = load_task_rows(tasks_sheet, target_date)
     print_stats(stats)
 
     if not rows:
@@ -67,8 +68,12 @@ def main():
         return
 
     # Отправка
-    result = send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date)
+    result = send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date, cols)
     print(f"\n🏁 Рассылка завершена. Результат: {result}")
+
+    # Отчёт заведующему — только если в этом запуске была реальная отправка
+    if result.get("doctors", 0) > 0:
+        send_summary_report(target_date, result, used_sheet_name)
 
 
 if __name__ == "__main__":
