@@ -14,8 +14,11 @@ TASK_SHORT = {
     3: "КДП СД",
 }
 
+# Маркер в начале строки задания (вместо бывших квадратиков [ ])
+TASK_MARKER = "🙂"
+
 # Хвостик после каждой строки задания
-TASK_SUFFIX = "   Выполнено: ДА    /  нет, виноват :(."
+TASK_SUFFIX = "   Выполнено: ДА    /  нет, виноват :(. "
 
 # Шуточные строки подвала (первая — до номера листа, вторая — после)
 FOOTER_LINE_1 = "Лист сохраните, вдруг когда-нибудь понадобится, покажете внукам."
@@ -65,9 +68,9 @@ def build_email_body(doctor, patients, bot_id, target_date, branch=""):
             short = TASK_SHORT.get(task["task_number"], task["title"])
             text = _short_text(task)
             if text:
-                base = f"   [ ] {letter}{short}: {text}"
+                base = f"   {TASK_MARKER} {letter}{short}: {text}"
             else:
-                base = f"   [ ] {letter}{short}"
+                base = f"   {TASK_MARKER} {letter}{short}"
             lines.append(base + TASK_SUFFIX)
         lines.append("")
 
