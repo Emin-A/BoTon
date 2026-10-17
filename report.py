@@ -8,7 +8,6 @@ def _format_per_doctor(per_doctor):
     """Форматирует список врачей в строки вида 'Фамилия И.О. — X заданий'."""
     if not per_doctor:
         return ["  (нет данных)"]
-    # Сортируем по фамилии (первое слово в ФИО)
     sorted_docs = sorted(per_doctor, key=lambda d: d["doctor"].split()[0] if d["doctor"] else "")
     lines = []
     for d in sorted_docs:
