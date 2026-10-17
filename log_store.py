@@ -5,9 +5,6 @@ from config import *
 from google_sheets import sheets_call
 from utils import now_moscow
 
-LOG_WIDTH = len(LOG_HEADERS)          # 10 колонок: A..J
-LAST_COL_LETTER = "J"
-
 
 def ensure_log_sheet(book):
     """Возвращает лист журнала, создавая его при необходимости."""
@@ -18,12 +15,11 @@ def ensure_log_sheet(book):
     except gspread.WorksheetNotFound:
         print(f"Google Sheets: создаю лист {LOG_SHEET_NAME}")
         ws = sheets_call(
-            lambda: book.add_worksheet(title=LOG_SHEET_NAME, rows=1000, cols=LOG_WIDTH),
+            lambda: book.add_worksheet(title=LOG_SHEET_NAME, rows=1000, cols=len(LOG_HEADERS)),
             "создание BoTon_Log",
         )
         sheets_call(
-            lambda: ws.update(f"A1:{LAST_COL_LETTER}1", [LOG_HEADERS],
-                              value_input_option="USER_ENTERED"),
+            lambda: ws.append_row(LOG_HEADERS, value_input_option="USER_ENTERED"),
             "заголовки BoTon_Log",
         )
         return ws
@@ -39,22 +35,8 @@ def make_log_row(event, bot_id="", target_date="", doctor="", email_address="",
     ]
 
 
-def _read_grid(log_sheet):
-    """Читает сетку листа целиком."""
-    return sheets_call(lambda: log_sheet.get_all_values(), "чтение журнала")
-
-
-def _last_used_row(values):
-    """Номер последней строки, где есть хоть одна непустая ячейка. 0 — если лист пуст."""
-    last = 0
-    for i, row in enumerate(values, start=1):
-        if any(str(c).strip() for c in row):
-            last = i
-    return last
-
-
 def append_log_entries(log_sheet, entries):
-    """Пакетно дописывает события ВСЕГДА начиная с колонки A (без лесенки)."""
+    """Пакетно дописывает события в журнал."""
     if not entries:
         return
     rows = []
@@ -72,36 +54,20 @@ def append_log_entries(log_sheet, entries):
                 notes=e.get("notes", ""),
             ))
         else:
-            rows.append(list(e))
-
-    values = _read_grid(log_sheet)
-    last = _last_used_row(values)
-
-    if last == 0:
-        # Пустой лист: сначала шапка, затем данные
-        rows = [list(LOG_HEADERS)] + rows
-        start = 1
-    else:
-        start = last + 1
-
-    end = start + len(rows) - 1
-    range_label = f"A{start}:{LAST_COL_LETTER}{end}"
+            rows.append(e)
     sheets_call(
-        lambda: log_sheet.update(range_label, rows, value_input_option="USER_ENTERED"),
+        lambda: log_sheet.append_rows(rows, value_input_option="USER_ENTERED"),
         "пакетная запись BoTon_Log",
     )
-    print(f"BoTon_Log: записано строк: {len(rows)} в диапазон {range_label}")
 
 
 def load_log_records(log_sheet):
-    """Читает записи журнала, пропуская пустые строки."""
-    values = _read_grid(log_sheet)
+    """Читает все записи журнала в список словарей."""
+    values = log_sheet.get_all_values()
     records = []
     for row in values[1:]:
         row = list(row)
-        if not any(str(c).strip() for c in row[:LOG_WIDTH]):
-            continue  # пустая строка — не запись
-        while len(row) < LOG_WIDTH:
+        while len(row) < 10:
             row.append("")
         records.append({
             "timestamp": row[0], "event": row[1], "bot_id": row[2],
