@@ -7,6 +7,7 @@ from utils import now_moscow
 
 
 def ensure_log_sheet(book):
+    """Возвращает лист журнала, создавая его при необходимости."""
     try:
         ws = book.worksheet(LOG_SHEET_NAME)
         print(f"BoTon_Log: {LOG_SHEET_NAME}")
@@ -35,6 +36,7 @@ def make_log_row(event, bot_id="", target_date="", doctor="", email_address="",
 
 
 def append_log_entries(log_sheet, entries):
+    """Пакетно дописывает события в журнал."""
     if not entries:
         return
     rows = []
@@ -60,9 +62,11 @@ def append_log_entries(log_sheet, entries):
 
 
 def load_log_records(log_sheet):
+    """Читает все записи журнала в список словарей."""
     values = log_sheet.get_all_values()
     records = []
     for row in values[1:]:
+        row = list(row)
         while len(row) < 10:
             row.append("")
         records.append({
@@ -75,6 +79,7 @@ def load_log_records(log_sheet):
 
 
 def get_send_state(records, bot_id):
+    """Последний статус отправки для BOTON-ID: SENT / PENDING / ''."""
     for r in reversed(records):
         if r["event"] == "SEND" and r["bot_id"] == bot_id and r["result"] in ("SENT", "PENDING"):
             return r["result"]
@@ -82,6 +87,7 @@ def get_send_state(records, bot_id):
 
 
 def find_log_by_bot_id(records, bot_id):
+    """Находит запись успешной отправки по BOTON-ID."""
     for r in reversed(records):
         if r["event"] == "SEND" and r["bot_id"] == bot_id and r["result"] == "SENT":
             return r
@@ -89,6 +95,7 @@ def find_log_by_bot_id(records, bot_id):
 
 
 def is_message_processed(records, message_id):
+    """Проверяет, обработано ли письмо с таким Message-ID."""
     if not message_id:
         return False
     return any(r["event"] == "RECEIVE" and r["message_id"] == message_id for r in records)
