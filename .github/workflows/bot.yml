@@ -20,8 +20,7 @@ on:
           - 'true'
           - 'false'
 
-  # Каждые 5 минут с 07:00 до 23:00 МСК:
-  # это же интервал срабатывания повтора после PENDING.
+  # Каждые 5 минут с 07:00 до 23:00 МСК
   schedule:
     - cron: '*/5 4-20 * * *'
 
@@ -55,6 +54,12 @@ jobs:
           FORCE_RESEND: ${{ github.event.inputs.force_resend || 'false' }}
           TEST_TO_RESERVE: ${{ github.event.inputs.test_to_reserve || 'false' }}
           POEM_API_KEY: ${{ secrets.POEM_API_KEY }}
+          TEST_EMAIL: ${{ secrets.TEST_EMAIL }}
+          REPORT_EMAIL: ${{ secrets.REPORT_EMAIL }}
+          RESERVE_EMAILS: ${{ secrets.RESERVE_EMAILS }}
+          TASKS_SPREADSHEET_ID: ${{ secrets.TASKS_SPREADSHEET_ID }}
+          DOCTORS_SPREADSHEET_ID: ${{ secrets.DOCTORS_SPREADSHEET_ID }}
+          LOG_SPREADSHEET_ID: ${{ secrets.LOG_SPREADSHEET_ID }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
