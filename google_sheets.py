@@ -40,12 +40,7 @@ def get_google_client():
     )
     return gspread.authorize(creds)
 
-def open_tasks_sheet(client):
-    """Открывает fallback-лист таблицы заданий."""
-    book = client.open_by_key(TASKS_SPREADSHEET_ID)
-    ws = book.worksheet(TASKS_SHEET_NAME_FALLBACK)
-    print(f"Использую вкладку: '{TASKS_SHEET_NAME_FALLBACK}'")
-    return ws, book
+ws = book.worksheet(LOG_SHEET_NAME)
 
 def open_doctors_sheet(client):
     return client.open_by_key(DOCTORS_SPREADSHEET_ID).worksheet(DOCTORS_SHEET_NAME)
