@@ -1,9 +1,10 @@
-"""Централизованные настройки BoTon. Секреты хранятся только в GitHub Secrets."""
+"""Централизованные настройки BoTon.
+Все персональные данные и адреса таблиц берутся ТОЛЬКО из секретов GitHub."""
 import os
 from datetime import time
 from zoneinfo import ZoneInfo
 
-VERSION = "4.1"
+VERSION = "4.2"
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
 
@@ -12,23 +13,31 @@ def _env_flag(name):
     return os.environ.get(name, "").strip().lower() == "true"
 
 
+def _env_list(name):
+    """Список значений из переменной окружения через запятую."""
+    raw = os.environ.get(name, "")
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+
 # Режимы запуска включаются кнопкой в GitHub (Run workflow).
 FORCE_RESEND = _env_flag("FORCE_RESEND")
 TEST_TO_RESERVE = _env_flag("TEST_TO_RESERVE")
 
-TEST_EMAIL = "agaverdiev@mail.ru"
-REPORT_EMAIL = "eagaverdiev@mosmedzdrav.ru"
+# Персональные адреса — ТОЛЬКО из секретов GitHub
+TEST_EMAIL = os.environ.get("TEST_EMAIL", "")
+REPORT_EMAIL = os.environ.get("REPORT_EMAIL", "")
 
 # Резервные адреса: сюда уходят письма в тестовом режиме
-# и когда у врача не заполнен email.
-RESERVE_EMAILS = [
-    "eagaverdiev@mosmedzdrav.ru",
-    "agaverdiev@mail.ru",
-]
+# и когда у врача не заполнен email. Задаются секретом RESERVE_EMAILS
+# через запятую; если секрета нет — собираются из REPORT_EMAIL и TEST_EMAIL.
+RESERVE_EMAILS = _env_list("RESERVE_EMAILS")
+if not RESERVE_EMAILS:
+    RESERVE_EMAILS = [a for a in [REPORT_EMAIL, TEST_EMAIL] if a]
 
-# Если запись PENDING висит дольше этого времени — запуск считает отправку
-# погибшей и отправляет письмо повторно.
-PENDING_RETRY_MINUTES = 5
+# Адреса таблиц — ТОЛЬКО из секретов GitHub
+TASKS_SPREADSHEET_ID = os.environ.get("TASKS_SPREADSHEET_ID", "")
+DOCTORS_SPREADSHEET_ID = os.environ.get("DOCTORS_SPREADSHEET_ID", "")
+LOG_SPREADSHEET_ID = os.environ.get("LOG_SPREADSHEET_ID", "")
 
 SERVICE_ACCOUNT_FILE = "credentials.json"
 SCOPES = [
@@ -36,18 +45,13 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-# Таблица заданий
-TASKS_SPREADSHEET_ID = "13maufkGFPUdNE-d_i_nvC4l5xf3ParmuFCNYJ32wmVk"
 TASKS_SHEET_DATE_FORMAT = "%d.%m.%Y"
 TASKS_SHEET_NAME_FALLBACK = "Лист1"
-
-# База врачей
-DOCTORS_SPREADSHEET_ID = "1grwcVilkiwOI01UgWu4jrhOLV2GVM7TJ6TqlXE7enAU"
 DOCTORS_SHEET_NAME = "Врачи"
-
-# Журнал бота (вкладка BoTon_Log в таблице врачей)
-LOG_SPREADSHEET_ID = "1grwcVilkiwOI01UgWu4jrhOLV2GVM7TJ6TqlXE7enAU"
 LOG_SHEET_NAME = "BoTon_Log"
+
+# Если запись PENDING висит дольше этого времени — отправка повторяется.
+PENDING_RETRY_MINUTES = 5
 
 # Резервные номера столбцов (индексация с нуля).
 # Реальные колонки определяются АВТОМАТИЧЕСКИ по заголовкам (см. tasks.py).
@@ -106,3 +110,19 @@ LOG_HEADERS = [
     "Result",
     "Notes",
 ]
+
+# Проверка: все обязательные секреты заданы
+REQUIRED_SETTINGS = {
+    "TEST_EMAIL": TEST_EMAIL,
+    "REPORT_EMAIL": REPORT_EMAIL,
+    "TASKS_SPREADSHEET_ID": TASKS_SPREADSHEET_ID,
+    "DOCTORS_SPREADSHEET_ID": DOCTORS_SPREADSHEET_ID,
+    "LOG_SPREADSHEET_ID": LOG_SPREADSHEET_ID,
+}
+
+_missing = [k for k, v in REQUIRED_SETTINGS.items() if not v]
+if _missing:
+    raise RuntimeError(
+        "Не заданы секреты/переменные окружения: " + ", ".join(_missing) +
+        ". Добавьте их: GitHub → Settings → Secrets and variables → Actions."
+    )
