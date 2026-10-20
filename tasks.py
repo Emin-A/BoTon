@@ -1,11 +1,13 @@
-"""Чтение, фильтрация и подготовка заданий. Колонки определяются по заголовкам."""
+"""Чтение, фильтрация и подготовка заданий.
+Колонки и КОЛИЧЕСТВО заданий определяются автоматически по заголовкам."""
+import re
 import hashlib
 from collections import defaultdict
 from config import *
 from utils import normalize_text, parse_date
 from google_sheets import sheets_call
 
-# Резервные колонки, если заголовки не распознаны
+# Базовые колонки (если заголовки не распознаны)
 DEFAULT_COLS = {
     "date": COL_DATE,
     "branch": COL_BRANCH,
@@ -13,40 +15,45 @@ DEFAULT_COLS = {
     "patient_id": COL_PATIENT_ID,
     "patient_name": COL_PATIENT_NAME,
     "source": COL_SOURCE,
-    "task1": COL_TASK1,
-    "task2": COL_TASK2,
-    "task3": COL_TASK3,
     "comments": COL_COMMENTS,
 }
 
-# Ключевые слова для поиска колонок по заголовкам
 COLUMN_KEYWORDS = {
     "date": ("дата",),
     "branch": ("филиал",),
-    "doctor": ("врач", "фио врача"),
-    "patient_id": ("идентификатор", "омс", "id"),
-    "patient_name": ("фио", "пациент"),
-    "task1": ("задание 1", "липиды"),
-    "task2": ("задание 2", "выгрузка"),
-    "task3": ("задание 3", "сд"),
+    "doctor": ("врач",),
+    "patient_id": ("идентификатор", "омс"),
+    "patient_name": ("фио",),
     "source": ("источник",),
     "comments": ("комментар",),
 }
 
+# Колонки заданий по умолчанию (если в шапке нет слова «задание»)
+FALLBACK_TASKS = [
+    {"col": COL_TASK1, "title": TASK_TITLES.get(1, "Задание 1"), "short": "липиды"},
+    {"col": COL_TASK2, "title": TASK_TITLES.get(2, "Задание 2"), "short": "КДП выгрузка"},
+    {"col": COL_TASK3, "title": TASK_TITLES.get(3, "Задание 3"), "short": "КДП СД"},
+]
+
+# Слова-исключения: такие колонки НЕ считаются заданиями
+TASK_EXCLUDE = ("отметка", "выполнени", "статус")
+
+
+def _short_from_header(header_raw):
+    """Короткое имя задания: текст в скобках заголовка или сам заголовок без 'Задание N'."""
+    h = str(header_raw or "").strip()
+    m = re.search(r"\(([^)]+)\)", h)
+    if m:
+        return m.group(1).strip()
+    cleaned = re.sub(r"^задание\s*\d*\s*", "", normalize_text(h)).strip()
+    return cleaned or "задание"
+
 
 def detect_columns(header):
-    """Определяет индексы колонок по заголовкам. Каждая колонка используется один раз."""
+    """Определяет базовые колонки и ВСЕ колонки заданий по заголовкам."""
     cols = dict(DEFAULT_COLS)
     used = set()
-    
-    # Порядок поиска: сначала специфичные, потом общие
-    search_order = [
-        "date", "branch", "doctor", "patient_id", "patient_name",
-        "task1", "task2", "task3", "source", "comments"
-    ]
-    
-    for key in search_order:
-        keywords = COLUMN_KEYWORDS.get(key, ())
+    for key, keywords in COLUMN_KEYWORDS.items():
         for i, h in enumerate(header):
             if i in used:
                 continue
@@ -57,6 +64,28 @@ def detect_columns(header):
                 cols[key] = i
                 used.add(i)
                 break
+
+    task_cols = []
+    for i, h in enumerate(header):
+        hn = normalize_text(h)
+        if not hn or "задание" not in hn:
+            continue
+        if any(x in hn for x in TASK_EXCLUDE):
+            continue
+        m = re.search(r"задание\s*(\d+)", hn)
+        num = int(m.group(1)) if m else len(task_cols) + 1
+        task_cols.append({
+            "col": i,
+            "number": num,
+            "title": str(h).strip(),
+            "short": _short_from_header(h),
+        })
+
+    if task_cols:
+        task_cols.sort(key=lambda t: (t["number"], t["col"]))
+        cols["tasks"] = task_cols
+    else:
+        cols["tasks"] = [dict(t) for t in FALLBACK_TASKS]
     return cols
 
 
@@ -68,18 +97,26 @@ def is_branch_match(value):
 
 
 def get_tasks_from_row(row, row_number, cols):
+    """Собирает непустые задания строки, присваивая буквы А, Б, В..."""
+    present = []
+    for tc in cols["tasks"]:
+        value = row[tc["col"]] if len(row) > tc["col"] else ""
+        if str(value).strip():
+            present.append((tc, str(value).strip()))
+
+    multi = len(present) > 1
     tasks = []
-    for key, number in (("task1", 1), ("task2", 2), ("task3", 3)):
-        col = cols[key]
-        value = row[col] if len(row) > col else ""
-        if not str(value).strip():
-            continue
+    for pos, (tc, text) in enumerate(present):
+        letter_raw = TASK_LETTERS[pos] if pos < len(TASK_LETTERS) else str(pos + 1)
         tasks.append({
-            "task_number": number,
-            "task_col": col,
+            "task_number": pos + 1,
+            "task_col": tc["col"],
             "row_number": row_number,
-            "title": TASK_TITLES.get(number, f"Задание {number}"),
-            "text": str(value).strip(),
+            "title": tc["title"],
+            "short": tc["short"],
+            "letter": f"{letter_raw}) " if multi else "",
+            "key_letter": letter_raw if multi else "",
+            "text": text,
         })
     return tasks
 
@@ -94,13 +131,15 @@ def load_task_rows(tasks_sheet, target_date):
     }
     values = sheets_call(lambda: tasks_sheet.get_all_values(), "чтение заданий")
     if not values or len(values) < 2:
-        return [], stats, dict(DEFAULT_COLS)
+        return [], stats, dict(DEFAULT_COLS, tasks=[dict(t) for t in FALLBACK_TASKS])
 
     cols = detect_columns(values[0])
-    print("Определённые колонки: " +
-          ", ".join(f"{k}={v + 1}" for k, v in cols.items()))
+    base_info = ", ".join(f"{k}={v + 1}" for k, v in cols.items() if k != "tasks")
+    print(f"Определённые колонки: {base_info}, заданий={len(cols['tasks'])}")
+    for tc in cols["tasks"]:
+        print(f"   Задание {tc['number']}: колонка {tc['col'] + 1} «{tc['title']}» → в письме «{tc['short']}»")
 
-    max_col = max(cols.values())
+    max_col = max([cols[k] for k in DEFAULT_COLS] + [t["col"] for t in cols["tasks"]])
     rows = []
     for row_number, row in enumerate(values[1:], start=2):
         stats["total"] += 1
@@ -198,9 +237,8 @@ def build_patients(doctor_rows):
 def build_response_task_map(patients):
     mapping = defaultdict(list)
     for pnum, patient in enumerate(patients, start=1):
-        tasks = patient["tasks"]
-        for t_idx, task in enumerate(tasks):
-            key = f"{pnum}" if len(tasks) == 1 else f"{pnum}{TASK_LETTERS[t_idx]}"
+        for task in patient["tasks"]:
+            key = f"{pnum}{task['key_letter']}"
             mapping[key].append({
                 "row_number": task["row_number"],
                 "title": task["title"],
