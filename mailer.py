@@ -9,13 +9,6 @@ from email.mime.text import MIMEText
 from config import *
 from utils import now_moscow
 
-# Короткие названия заданий для компактного листа
-TASK_SHORT = {
-    1: "липиды",
-    2: "КДП выгрузка",
-    3: "КДП СД",
-}
-
 # Маркер в начале строки задания
 TASK_MARKER = "🙂"
 
@@ -39,7 +32,6 @@ POEM_PROMPT = (
 )
 
 # Резервная подборка ГОТОВЫХ стихов (НЕ генератор).
-# Работает только пока нет API-ключа или API недоступен.
 CURATED_POEMS = [
 """Царь письмо отправил в семь часов утра,
 Холопам на почту — работать пора.
@@ -75,7 +67,6 @@ CURATED_POEMS = [
 Держава в порядке, и каждый доволен.""",
 ]
 
-# Счётчик писем внутри одного запуска (для ротации резервных стихов)
 _poem_index = 0
 
 
@@ -145,7 +136,8 @@ def _short_text(task):
 
 
 def build_email_body(doctor, patients, bot_id, target_date, branch=""):
-    """Компактный лист заданий под A4 + стих в конце."""
+    """Компактный лист заданий под A4 + стих в конце.
+    Поддерживает ЛЮБОЕ количество заданий у пациента (буквы А..К)."""
     wide = "=" * 44
     thin = "-" * 44
     total_tasks = sum(len(p["tasks"]) for p in patients)
@@ -169,16 +161,11 @@ def build_email_body(doctor, patients, bot_id, target_date, branch=""):
         p_id = patient["patient_id"] or "не указан"
         lines.append(f"{pnum}. {p_name} — ОМС {p_id}")
 
-        tasks = patient["tasks"]
-        multi = len(tasks) > 1
-        for t_idx, task in enumerate(tasks):
-            letter = f"{TASK_LETTERS[t_idx]}) " if multi else ""
-            short = TASK_SHORT.get(task["task_number"], task["title"])
+        for task in patient["tasks"]:
             text = _short_text(task)
+            base = f"   {TASK_MARKER} {task['letter']}{task['short']}"
             if text:
-                base = f"   {TASK_MARKER} {letter}{short}: {text}"
-            else:
-                base = f"   {TASK_MARKER} {letter}{short}"
+                base += f": {text}"
             lines.append(base + TASK_SUFFIX)
         lines.append("")
 
