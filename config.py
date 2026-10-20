@@ -4,7 +4,7 @@ import os
 from datetime import time
 from zoneinfo import ZoneInfo
 
-VERSION = "4.2"
+VERSION = "4.3"
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
 
@@ -27,9 +27,6 @@ TEST_TO_RESERVE = _env_flag("TEST_TO_RESERVE")
 TEST_EMAIL = os.environ.get("TEST_EMAIL", "")
 REPORT_EMAIL = os.environ.get("REPORT_EMAIL", "")
 
-# Резервные адреса: сюда уходят письма в тестовом режиме
-# и когда у врача не заполнен email. Задаются секретом RESERVE_EMAILS
-# через запятую; если секрета нет — собираются из REPORT_EMAIL и TEST_EMAIL.
 RESERVE_EMAILS = _env_list("RESERVE_EMAILS")
 if not RESERVE_EMAILS:
     RESERVE_EMAILS = [a for a in [REPORT_EMAIL, TEST_EMAIL] if a]
@@ -54,7 +51,7 @@ LOG_SHEET_NAME = "BoTon_Log"
 PENDING_RETRY_MINUTES = 5
 
 # Резервные номера столбцов (индексация с нуля).
-# Реальные колонки определяются АВТОМАТИЧЕСКИ по заголовкам (см. tasks.py).
+# Реальные колонки и КОЛИЧЕСТВО заданий определяются по заголовкам (см. tasks.py).
 COL_DATE = 0
 COL_BRANCH = 1
 COL_DOCTOR = 2
@@ -76,8 +73,10 @@ BRANCH_KEYWORDS = [
     "гп 107 ф2",
 ]
 
-TASK_LETTERS = ["А", "Б", "В"]
+# Буквы для нескольких заданий у одного пациента (до 10 заданий)
+TASK_LETTERS = ["А", "Б", "В", "Г", "Д", "Е", "Ж", "З", "И", "К"]
 
+# Заголовки заданий по умолчанию (если шапка не распознана)
 TASK_TITLES = {
     1: "Задание 1 (липиды)",
     2: "Задание 2 (КДП — выгрузка)",
