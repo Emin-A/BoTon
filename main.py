@@ -1,4 +1,3 @@
-cat > main.py << 'EOF'
 """Точка входа: поиск вкладки с сегодняшней датой и запуск рассылки."""
 import sys
 import gspread
@@ -98,4 +97,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-EOF
