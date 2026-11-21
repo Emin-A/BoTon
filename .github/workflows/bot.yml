@@ -1,3 +1,4 @@
+cat > .github/workflows/bot.yml << 'EOF'
 name: BoTon - Рассылка заданий
 
 on:
@@ -20,9 +21,10 @@ on:
           - 'true'
           - 'false'
 
-  # Каждые 5 минут с 07:00 до 20:00 МСК (04:00-17:00 UTC)
+  # Каждые 5 минут с 07:00 МСК (04:00 UTC). После 14:00 МСК main.py сам не отправляет.
+  # Если данных в таблице нет — бот завершается и проверяет снова через 5 минут.
   schedule:
-    - cron: '*/5 4-17 * * *'
+    - cron: '*/5 4-11 * * *'
 
 # Защита от параллельных запусков: дубли писем исключены.
 concurrency:
@@ -65,3 +67,4 @@ jobs:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SMTP_FROM_EMAIL: ${{ secrets.SMTP_FROM_EMAIL }}
+EOF
