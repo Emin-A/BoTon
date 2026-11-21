@@ -1,4 +1,3 @@
-cat > doctors.py << 'EOF'
 """Работа с базой врачей из Google Sheets."""
 import re
 from config import *
@@ -92,4 +91,3 @@ def find_doctor_robust(source_name, doctors):
             if source_initials & doc_initials:
                 return doc
     return None
-EOF
