@@ -14,7 +14,7 @@ def today_str():
 
 def is_assignment_time():
     t = now_moscow().time()
-    return time(ASSIGNMENT_HOUR_START, 0) <= t <= time(ASSIGNMENT_HOUR_END, 0)
+    return time(ASSIGNMENT_HOUR_START, 0) <= t < time(ASSIGNMENT_HOUR_END, 0)
 
 
 def normalize_text(value):
@@ -50,7 +50,7 @@ def get_signature(name):
 
 
 def parse_date(value):
-    """Парсинг даты из строки, объекта datetime или числа (Google Sheets serial date)."""
+    """Парсинг даты из строки, datetime или числа (serial date Google Sheets)."""
     if value is None:
         return None
     if isinstance(value, datetime):
