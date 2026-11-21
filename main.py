@@ -1,6 +1,6 @@
+cat > main.py << 'EOF'
 """Точка входа: поиск вкладки с сегодняшней датой и запуск рассылки."""
 import sys
-from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
 from config import (
@@ -10,15 +10,17 @@ from config import (
     DOCTORS_SPREADSHEET_ID,
     DOCTORS_SHEET_NAME,
     LOG_SPREADSHEET_ID,
-    LOG_SHEET_NAME,
     SCOPES,
     SERVICE_ACCOUNT_FILE,
+    ASSIGNMENT_HOUR_START,
+    ASSIGNMENT_HOUR_END,
 )
 from tasks import load_task_rows, print_stats
 from sender import send_today_assignments
 from doctors import load_doctors
 from log_store import ensure_log_sheet
 from report import send_summary_report
+from utils import now_moscow
 
 
 def get_tasks_sheet_by_date(spreadsheet, target_date):
@@ -38,43 +40,62 @@ def get_tasks_sheet_by_date(spreadsheet, target_date):
             sys.exit(1)
 
 
+def is_within_work_window():
+    """Проверяет, что текущее московское время внутри окна рассылки."""
+    now = now_moscow()
+    current_minutes = now.hour * 60 + now.minute
+    return ASSIGNMENT_HOUR_START * 60 <= current_minutes < ASSIGNMENT_HOUR_END * 60
+
+
 def main():
+    # 1. Вне окна 07:00–14:00 МСК — выходим без отправки.
+    if not is_within_work_window():
+        now_str = now_moscow().strftime("%H:%M")
+        print(f"⏸️ Сейчас {now_str} МСК — вне окна рассылки "
+              f"({ASSIGNMENT_HOUR_START:02d}:00 – {ASSIGNMENT_HOUR_END:02d}:00). "
+              f"Завершаю без отправки.")
+        return
+
     creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
     gc = gspread.authorize(creds)
 
-    target_date = datetime.now().date()
+    target_date = now_moscow().date()
     print(f"📅 Дата рассылки: {target_date.strftime('%d.%m.%Y')}")
+    print(f"🕐 Время запуска (МСК): {now_moscow().strftime('%H:%M:%S')}")
 
-    # Таблица заданий
+    # 2. Таблица заданий
     tasks_spreadsheet = gc.open_by_key(TASKS_SPREADSHEET_ID)
     tasks_sheet, used_sheet_name = get_tasks_sheet_by_date(tasks_spreadsheet, target_date)
 
-    # Таблица врачей
+    # 3. Таблица врачей
     doctors_spreadsheet = gc.open_by_key(DOCTORS_SPREADSHEET_ID)
     doctors_sheet = doctors_spreadsheet.worksheet(DOCTORS_SHEET_NAME)
     doctors = load_doctors(doctors_sheet)
     print(f"👨‍⚕️ Загружено врачей: {len(doctors)}")
 
-    # Журнал — в таблице врачей, создаётся автоматически если отсутствует
+    # 4. Журнал — создаётся автоматически, если отсутствует
     log_spreadsheet = gc.open_by_key(LOG_SPREADSHEET_ID)
     log_sheet = ensure_log_sheet(log_spreadsheet)
 
-    # Загрузка строк + автоопределение колонок (возвращает 3 значения!)
+    # 5. Загрузка строк + автоопределение колонок
     rows, stats, cols = load_task_rows(tasks_sheet, target_date)
     print_stats(stats)
 
+    # 6. Данных нет — тихо выходим. Cron запустит проверку снова через 5 минут.
     if not rows:
-        print("⚠️ Нет строк для отправки. Завершаю работу.")
+        print("⚠️ Данных на сегодня в таблице пока нет. "
+              "Завершаю — следующий запуск через 5 минут проверит снова.")
         return
 
-    # Отправка (передаём cols для записи в правильную колонку комментариев)
+    # 7. Отправка
     result = send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date, cols)
     print(f"\n🏁 Рассылка завершена. Результат: {result}")
 
-    # Отчёт заведующему — только если в этом запуске была реальная отправка
+    # 8. Отчёт заведующему — только если была реальная отправка
     if result.get("doctors", 0) > 0:
         send_summary_report(target_date, result, used_sheet_name)
 
 
 if __name__ == "__main__":
     main()
+EOF
