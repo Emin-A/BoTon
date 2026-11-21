@@ -26,7 +26,6 @@ TEST_TO_RESERVE = _env_flag("TEST_TO_RESERVE")
 # Персональные адреса — ТОЛЬКО из секретов GitHub
 TEST_EMAIL = os.environ.get("TEST_EMAIL", "")
 REPORT_EMAIL = os.environ.get("REPORT_EMAIL", "")
-
 RESERVE_EMAILS = _env_list("RESERVE_EMAILS")
 if not RESERVE_EMAILS:
     RESERVE_EMAILS = [a for a in [REPORT_EMAIL, TEST_EMAIL] if a]
@@ -84,8 +83,9 @@ TASK_TITLES = {
 }
 
 # Окно рассылки по московскому времени
-ASSIGNMENT_HOUR_START = 6
-ASSIGNMENT_HOUR_END = 22
+# Начало: 07:00. Конец: 14:00 (но реально бот отправит только когда появятся данные)
+ASSIGNMENT_HOUR_START = 7
+ASSIGNMENT_HOUR_END = 14
 
 SHEETS_RETRY_ATTEMPTS = 5
 SHEETS_RETRY_BASE_SECONDS = 1.5
