@@ -1,3 +1,4 @@
+cat > doctors.py << 'EOF'
 """Работа с базой врачей из Google Sheets."""
 import re
 from config import *
@@ -49,7 +50,7 @@ def load_doctors(doctors_sheet):
 
     doctors = []
     for row in values[1:]:
-        if not row or not str(row[name_col]).strip():
+        if not row or len(row) <= name_col or not str(row[name_col]).strip():
             continue
         raw_email = row[email_col] if len(row) > email_col else ""
         email = normalize_email(raw_email)
@@ -62,6 +63,7 @@ def load_doctors(doctors_sheet):
             "email": email,
             "branch": str(row[branch_col]).strip() if branch_col is not None and len(row) > branch_col else "",
         })
+
     print(f"Загружено врачей из таблицы: {len(doctors)}")
     return doctors
 
@@ -90,3 +92,4 @@ def find_doctor_robust(source_name, doctors):
             if source_initials & doc_initials:
                 return doc
     return None
+EOF
