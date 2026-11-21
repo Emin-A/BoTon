@@ -1,23 +1,34 @@
-"""SMTP и текст писем (компактная форма под A4 + стихи: API с резервной подборкой)."""
+"""SMTP и текст писем: лист заданий в виде таблицы + стихи (API с резервной подборкой)."""
 import os
 import ssl
 import smtplib
 import json
+import textwrap
 import urllib.request
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from config import *
 from utils import now_moscow
 
-# Маркер в начале строки задания
+# Маркер в начале строки задания (оставлен для совместимости)
 TASK_MARKER = "🙂"
-
-# Хвостик после каждой строки задания
 TASK_SUFFIX = "   Выполнено: ДА    /  нет, виноват :(. "
 
 # Шуточные строки подвала
 FOOTER_LINE_1 = "Лист сохраните, вдруг когда-нибудь понадобится, покажете внукам."
 FOOTER_LINE_2 = "Царь молодец!"
+
+# ============================================================
+# ШИРИНЫ КОЛОНОК ТАБЛИЦЫ (в символах). Меняй под свой принтер.
+# Сумма 92 + рамки = 105 символов. Для узкой бумаги уменьши числа.
+# ============================================================
+COL_PATIENT = 22
+COL_TASK = 24
+COL_STATUS = 20
+COL_DETAILS = 26
+
+# Что печатается в колонке «Статус» — врач ставит X в нужный квадратик
+STATUS_LINES = ["[ ] Выполнено", "[ ] нет, виноват :("]
 
 # Настройки API стихов (по умолчанию Groq — бесплатный).
 POEM_API_URL = os.environ.get("POEM_API_URL", "https://api.groq.com/openai/v1/chat/completions")
@@ -33,35 +44,35 @@ POEM_PROMPT = (
 
 # Резервная подборка ГОТОВЫХ стихов (НЕ генератор).
 CURATED_POEMS = [
-"""Царь письмо отправил в семь часов утра,
+    """Царь письмо отправил в семь часов утра,
 Холопам на почту — работать пора.
 Кто липиды правит, кто КДП ведёт,
 К вечеру отметку царю несёт.""",
-"""В отделенье тихо, лишь клавиш стук:
+    """В отделенье тихо, лишь клавиш стук:
 Царь разослал порученья для слуг.
 Квадратик отмечен — и на сердце покойно:
 Царь молодец, и холопы довольны.""",
-"""Царь не спит на печи, царь в таблицы глядит:
+    """Царь не спит на печи, царь в таблицы глядит:
 Кто не сдал КДП — того ждёт визит.
 Но не гневайся, царь, твои холопы верны —
 К вечеру все отметки в таблице полны.""",
-"""Шлёт царь-батюшка письма с утренней зорькой,
+    """Шлёт царь-батюшка письма с утренней зорькой,
 Холопы отвечают исправно, хоть горько.
 Зато к вечеру, царь, всё исполнено в срок —
 Получай свой отчёт, дорогой наш царёк!""",
-"""Вздыхает холоп: «Снова письма с утра!»
+    """Вздыхает холоп: «Снова письма с утра!»
 Но спорить не смеет: работать пора.
 Ведь царь-то печётся не ради забав —
 Чтоб каждый пациент был здоров и прав.""",
-"""Царь и холоп — одна семья,
+    """Царь и холоп — одна семья,
 Без них не крутится земля:
 Царь шлёт задания с утра,
 Холоп их делает. Ура!""",
-"""Коль царь прислал письмо — не унывай,
+    """Коль царь прислал письмо — не унывай,
 Читай, отмечай и выполняй.
 А царь, получив твой отчёт-доклад,
 Скажет: «Холоп мой, ты просто клад!»""",
-"""Лист на А4 — как царский указ:
+    """Лист на А4 — как царский указ:
 Всё по пунктам, без лишних фраз.
 Холоп отчитался — и царь успокоен:
 Держава в порядке, и каждый доволен.""",
@@ -135,11 +146,55 @@ def _short_text(task):
     return text
 
 
+# ============================================================
+# ОТРИСОВКА ТАБЛИЦЫ
+# ============================================================
+def _wrap_cell(text, width):
+    """Переносит текст внутри ячейки по ширине колонки."""
+    text = str(text or "").strip()
+    if not text:
+        return [""]
+    lines = []
+    for paragraph in text.splitlines():
+        paragraph = paragraph.strip()
+        if not paragraph:
+            lines.append("")
+            continue
+        wrapped = textwrap.wrap(
+            paragraph, width=width,
+            break_long_words=True, break_on_hyphens=False,
+        )
+        lines.extend(wrapped or [""])
+    return lines or [""]
+
+
+def _border(widths, left, mid, right):
+    """Горизонтальная линия таблицы."""
+    return left + mid.join("─" * (w + 2) for w in widths) + right
+
+
+def _table_row(cells, widths):
+    """Одна строка таблицы (может занимать несколько экранных строк)."""
+    wrapped = [_wrap_cell(c, w) for c, w in zip(cells, widths)]
+    height = max(len(col) for col in wrapped)
+    for col in wrapped:
+        while len(col) < height:
+            col.append("")
+    out = []
+    for i in range(height):
+        parts = [wrapped[j][i].ljust(widths[j]) for j in range(len(widths))]
+        out.append("│ " + " │ ".join(parts) + " │")
+    return out
+
+
 def build_email_body(doctor, patients, bot_id, target_date, branch=""):
-    """Компактный лист заданий под A4 + стих в конце.
+    """Лист заданий в виде таблицы + стих в конце.
     Поддерживает ЛЮБОЕ количество заданий у пациента (буквы А..К)."""
-    wide = "=" * 44
-    thin = "-" * 44
+    widths = [COL_PATIENT, COL_TASK, COL_STATUS, COL_DETAILS]
+    table_width = sum(w + 2 for w in widths) + len(widths) + 1
+    wide = "=" * table_width
+    thin = "-" * table_width
+
     total_tasks = sum(len(p["tasks"]) for p in patients)
 
     lines = [
@@ -154,23 +209,36 @@ def build_email_body(doctor, patients, bot_id, target_date, branch=""):
         f"Пациентов: {len(patients)} | Заданий: {total_tasks}",
         thin,
         "",
+        "Отметьте X в нужном квадратике напротив каждого задания.",
+        "Что не отмечено — считается «Не выполнено».",
+        "",
+        _border(widths, "┌", "┬", "┐"),
     ]
+    lines += _table_row(["Пациент", "Задание", "Статус", "Расшифровка задания"], widths)
+    lines.append(_border(widths, "├", "┼", "┤"))
 
-    for pnum, patient in enumerate(patients, start=1):
-        p_name = patient["patient_name"] or "ФИО не указано"
-        p_id = patient["patient_id"] or "не указан"
-        lines.append(f"{pnum}. {p_name} — ОМС {p_id}")
+    first_row = True
+    for patient in patients:
+        p_name = patient.get("patient_name") or "ФИО не указано"
+        p_id = patient.get("patient_id") or "не указан"
+        patient_cell = f"{p_name}\nОМС {p_id}"
 
-        for task in patient["tasks"]:
-            text = _short_text(task)
-            base = f"   {TASK_MARKER} {task['letter']}{task['short']}"
-            if text:
-                base += f": {text}"
-            lines.append(base + TASK_SUFFIX)
-        lines.append("")
+        for task in patient.get("tasks", []):
+            if not first_row:
+                lines.append(_border(widths, "├", "┼", "┤"))
+            first_row = False
+
+            letter = str(task.get("letter", "")).strip()
+            short = str(task.get("short", "") or "").strip().lstrip("—-–: ").strip()
+            label = f"{letter} — {short}" if short else letter
+            details = _short_text(task)
+            status = "\n".join(STATUS_LINES)
+
+            lines += _table_row([patient_cell, label, status, details], widths)
+
+    lines.append(_border(widths, "└", "┴", "┘"))
 
     poem = generate_poem(target_date)
-
     lines += [
         thin,
         FOOTER_LINE_1,
