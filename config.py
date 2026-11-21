@@ -7,14 +7,17 @@ from zoneinfo import ZoneInfo
 VERSION = "4.3"
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
+
 def _env_flag(name):
     """True, только если переменная окружения равна 'true'."""
     return os.environ.get(name, "").strip().lower() == "true"
+
 
 def _env_list(name):
     """Список значений из переменной окружения через запятую."""
     raw = os.environ.get(name, "")
     return [x.strip() for x in raw.split(",") if x.strip()]
+
 
 # Режимы запуска включаются кнопкой в GitHub (Run workflow).
 FORCE_RESEND = _env_flag("FORCE_RESEND")
@@ -59,28 +62,32 @@ COL_TASK3 = 8
 COL_COMMENTS = 9
 
 BRANCH_KEYWORDS = [
-    "ф2", "филиал 2", "филиал № 2", "гп 107 ф 2", "гп 48",
-    "107 ф 2", "гп 107 ф2",
+    "ф2",
+    "филиал 2",
+    "филиал № 2",
+    "гп 107 ф 2",
+    "гп 48",
+    "107 ф 2",
+    "гп 107 ф2",
 ]
 
-# Буквы для нескольких заданий у одного пациента (до 10 заданий)
 TASK_LETTERS = ["А", "Б", "В", "Г", "Д", "Е", "Ж", "З", "И", "К"]
 
-# Заголовки заданий по умолчанию (если шапка не распознана)
 TASK_TITLES = {
     1: "Задание 1 (липиды)",
     2: "Задание 2 (КДП — выгрузка)",
     3: "Задание 3 (КДП СД 3 квартал)",
 }
 
-# Окно рассылки по московскому времени (ИСПРАВЛЕНО: до 20:00)
+# Окно рассылки по московскому времени: с 07:00 до 20:00.
+# Бот проверяет таблицу каждые 5 минут и отправляет, как только появятся данные.
 ASSIGNMENT_HOUR_START = 7
 ASSIGNMENT_HOUR_END = 20
 
 SHEETS_RETRY_ATTEMPTS = 5
 SHEETS_RETRY_BASE_SECONDS = 1.5
 
-# Почта (SMTP): ИСПРАВЛЕНЫ ПРОБЕЛЫ В ИМЕНАХ ПЕРЕМЕННЫХ
+# Почта (SMTP): значения берутся из секретов GitHub Actions
 SMTP_HOST = os.environ.get("SMTP_HOST", "")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "465"))
 SMTP_USER = os.environ.get("SMTP_USER", "")
@@ -88,11 +95,18 @@ SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 SMTP_FROM_EMAIL = os.environ.get("SMTP_FROM_EMAIL", REPORT_EMAIL)
 
 LOG_HEADERS = [
-    "Timestamp", "Event", "BOTON-ID", "Дата", "Врач",
-    "Email", "Mapping JSON", "Message-ID", "Result", "Notes",
+    "Timestamp",
+    "Event",
+    "BOTON-ID",
+    "Дата",
+    "Врач",
+    "Email",
+    "Mapping JSON",
+    "Message-ID",
+    "Result",
+    "Notes",
 ]
 
-# Проверка: все обязательные секреты заданы
 REQUIRED_SETTINGS = {
     "TEST_EMAIL": TEST_EMAIL,
     "REPORT_EMAIL": REPORT_EMAIL,
