@@ -20,20 +20,24 @@ on:
           - 'true'
           - 'false'
 
-  # Каждые 5 минут. 04:00-17:00 UTC = 07:00-20:55 МСК.
-  # Реальную границу 20:00 держит main.py: после 20:00 он ничего не отправляет.
-  # Запас нужен, потому что расписание GitHub иногда опаздывает на 5-15 минут.
+  # ДЕЖУРНЫЙ РЕЖИМ: 3 запуска в день вместо 288.
+  # Каждый запуск сам проверяет таблицу каждые 5 минут до 5ч50м.
+  # GitHub редко запускает schedule вовремя — при редком расписании
+  # задержки не страшны, дежурство всё равно накроет рабочие часы.
   schedule:
-    - cron: '*/5 4-17 * * *'
+    - cron: '0 4 * * *'    # 07:00 МСК — утреннее дежурство
+    - cron: '0 10 * * *'   # 13:00 МСК — дневное дежурство
+    - cron: '0 16 * * *'   # 19:00 МСК — вечернее дежурство
 
-# Защита от параллельных запусков: дубли писем исключены.
+# Новое дежурство заменяет предыдущее, очередь не копится.
 concurrency:
   group: boton-send
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   send-assignments:
     runs-on: ubuntu-latest
+    timeout-minutes: 355
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -53,6 +57,7 @@ jobs:
       - name: Run BoTon
         run: python main.py
         env:
+          PYTHONUNBUFFERED: "1"
           FORCE_RESEND: ${{ github.event.inputs.force_resend || 'false' }}
           TEST_TO_RESERVE: ${{ github.event.inputs.test_to_reserve || 'false' }}
           POEM_API_KEY: ${{ secrets.POEM_API_KEY }}
