@@ -1,6 +1,6 @@
 """Точка входа BoTon: ДЕЖУРНЫЙ РЕЖИМ.
-Один запуск сам проверяет таблицу каждые 5 минут, отправляет рассылку,
-как только появятся данные, и следит за новыми данными до конца окна.
+Проверяет таблицу каждые 5 минут. Как только данные появились — отправляет
+рассылку и ЗАВЕРШАЕТСЯ. Повторных проверок после рассылки не делает.
 """
 from time import sleep
 from datetime import timedelta
@@ -32,10 +32,16 @@ except ImportError:
     send_morning_status = None
     print("ℹ️ В report.py нет send_morning_status — утренние статусы отключены")
 
-# Как часто проверять таблицу внутри дежурства
-CHECK_INTERVAL_SECONDS = 300              # 5 минут
-# Сколько живёт одно дежурство (лимит GitHub на job — 6 часов, берём с запасом)
-MAX_WATCH_SECONDS = 5 * 3600 + 50 * 60    # 5 часов 50 минут
+# ============================================================
+# НАСТРОЙКИ ДЕЖУРСТВА
+# ============================================================
+# Как часто проверять таблицу, пока данных нет (можно 5..10)
+CHECK_INTERVAL_MINUTES = 5
+# Сколько максимум живёт одно дежурство (лимит GitHub на job — 6 часов)
+MAX_WATCH_MINUTES = 350
+
+CHECK_INTERVAL_SECONDS = CHECK_INTERVAL_MINUTES * 60
+MAX_WATCH_SECONDS = MAX_WATCH_MINUTES * 60
 
 
 def make_client():
@@ -62,7 +68,7 @@ def get_tasks_sheet_by_date(spreadsheet, target_date):
 
 
 def notify(target_date, log_sheet, code, sheet_name="", stats=None):
-    """Утренний статус заведующему (сам не дублируется — защита в report.py)."""
+    """Утренний статус заведующему. Сам не дублируется — защита в report.py."""
     if send_morning_status is None:
         return
     try:
@@ -72,7 +78,7 @@ def notify(target_date, log_sheet, code, sheet_name="", stats=None):
 
 
 def run_once(cycle):
-    """Одна проверка таблицы и, если есть данные, рассылка."""
+    """Одна проверка таблицы. Возвращает результат рассылки или None."""
     target_date = now_moscow().date()
     print(f"\n{'=' * 60}")
     print(f"ПРОВЕРКА №{cycle} | {now_moscow().strftime('%H:%M:%S')} МСК | "
@@ -88,7 +94,7 @@ def run_once(cycle):
     tasks_sheet, used_sheet_name = get_tasks_sheet_by_date(tasks_spreadsheet, target_date)
     if tasks_sheet is None:
         notify(target_date, log_sheet, "NO_SHEET", "")
-        return
+        return None
 
     doctors_spreadsheet = gc.open_by_key(DOCTORS_SPREADSHEET_ID)
     doctors_sheet = doctors_spreadsheet.worksheet(DOCTORS_SHEET_NAME)
@@ -96,33 +102,61 @@ def run_once(cycle):
     print(f"👨‍⚕️ Загружено врачей: {len(doctors)}")
     if not doctors:
         notify(target_date, log_sheet, "NO_DOCTORS", used_sheet_name)
-        return
+        return None
 
     rows, stats, cols = load_task_rows(tasks_sheet, target_date)
     print_stats(stats)
 
     if not rows:
-        print("⚠️ Данных на сегодня в таблице пока нет. Проверю снова через 5 минут.")
+        print(f"⚠️ Данных на сегодня нет. Проверю снова через {CHECK_INTERVAL_MINUTES} мин.")
         notify(target_date, log_sheet, "NO_DATA", used_sheet_name)
-        return
+        return None
 
     result = send_today_assignments(tasks_sheet, log_sheet, doctors, rows, target_date, cols)
     print(f"\n🏁 Результат: {result}")
 
     if result.get("doctors", 0) > 0:
         send_summary_report(target_date, result, used_sheet_name)
-        return
-
-    # Никому не ушло — сообщаем причину (один раз в день)
-    if result.get("errors", 0) > 0:
-        code = "ERROR"
-    elif result.get("not_found", 0) > 0:
-        code = "NOT_FOUND"
-    elif result.get("skipped", 0) > 0:
-        code = "ALREADY_SENT"
     else:
-        code = "NO_DATA"
-    notify(target_date, log_sheet, code, used_sheet_name, result)
+        if result.get("errors", 0) > 0:
+            code = "ERROR"
+        elif result.get("not_found", 0) > 0:
+            code = "NOT_FOUND"
+        elif result.get("skipped", 0) > 0:
+            code = "ALREADY_SENT"
+        else:
+            code = "NO_DATA"
+        notify(target_date, log_sheet, code, used_sheet_name, result)
+
+    return result
+
+
+def should_stop(result):
+    """Главная логика: продолжать проверки или закончить дежурство.
+    Возвращает (остановиться, пояснение)."""
+    if result is None:
+        return False, "данных для рассылки пока нет"
+
+    doctors = result.get("doctors", 0)
+    errors = result.get("errors", 0)
+    skipped = result.get("skipped", 0)
+    not_found = result.get("not_found", 0)
+
+    # Ошибки почты — пробуем ещё, пока не уйдёт
+    if errors > 0:
+        return False, f"ошибок отправки: {errors} — повторю попытку"
+
+    # Рассылка выполнена — СТОП, таблицу больше не проверяем
+    if doctors > 0:
+        extra = f", не найдено в базе врачей: {not_found}" if not_found else ""
+        return True, f"РАССЫЛКА ВЫПОЛНЕНА: писем отправлено {doctors}{extra}"
+
+    # Всё уже было отправлено раньше — СТОП
+    if skipped > 0 and not_found == 0:
+        return True, f"ВСЁ УЖЕ ОТПРАВЛЕНО РАНЕЕ ({skipped}) — повторно не отправляем"
+
+    # Отправлять нечего (например, ФИО не совпали) — ждём исправления
+    return False, "отправлять пока нечего"
 
 
 def main():
@@ -130,8 +164,9 @@ def main():
     deadline = started + timedelta(seconds=MAX_WATCH_SECONDS)
     print(f"🟢 ДЕЖУРСТВО НАЧАТО {started.strftime('%d.%m.%Y %H:%M')} МСК")
     print(f"   Окно рассылки: {ASSIGNMENT_HOUR_START:02d}:00–{ASSIGNMENT_HOUR_END:02d}:00 МСК")
-    print(f"   Проверка каждые {CHECK_INTERVAL_SECONDS // 60} минут")
-    print(f"   Дежурство до: {deadline.strftime('%H:%M')} МСК")
+    print(f"   Проверка таблицы каждые {CHECK_INTERVAL_MINUTES} минут")
+    print(f"   Дежурство максимум до: {deadline.strftime('%H:%M')} МСК")
+    print(f"   После выполненной рассылки дежурство завершается сразу")
 
     cycle = 0
     while True:
@@ -148,26 +183,35 @@ def main():
             return
 
         if now.hour < ASSIGNMENT_HOUR_START:
-            # Запуск случился ночью/рано утром — НЕ выходим, ждём открытия окна.
             print(f"⏳ Сейчас {now.strftime('%H:%M')} МСК — рано. "
-                  f"Жду {ASSIGNMENT_HOUR_START:02d}:00, проверяю каждые 5 минут.")
+                  f"Жду {ASSIGNMENT_HOUR_START:02d}:00.")
             sleep(min(CHECK_INTERVAL_SECONDS,
                       max(1, int((deadline - now).total_seconds()))))
             continue
 
         cycle += 1
+        result = None
         try:
-            run_once(cycle)
+            result = run_once(cycle)
         except Exception as exc:
             print(f"❌ Ошибка проверки №{cycle}: {exc}")
-            print("   Не страшно — повторю через 5 минут.")
+            print(f"   Повторю через {CHECK_INTERVAL_MINUTES} минут.")
+
+        stop, reason = should_stop(result)
+        if stop:
+            print(f"\n{'=' * 60}")
+            print(f"✅ {reason}")
+            print(f"   Дежурство завершено. Таблицу больше не проверяю.")
+            print(f"{'=' * 60}")
+            return
 
         left = int((deadline - now_moscow()).total_seconds())
         if left <= 0:
             continue
-        print(f"\n💤 Пауза {min(CHECK_INTERVAL_SECONDS, left) // 60} мин "
+        pause = min(CHECK_INTERVAL_SECONDS, left)
+        print(f"\n💤 {reason}. Следующая проверка через {pause // 60} мин "
               f"(дежурство ещё {left // 60} мин)")
-        sleep(min(CHECK_INTERVAL_SECONDS, left))
+        sleep(pause)
 
 
 if __name__ == "__main__":
